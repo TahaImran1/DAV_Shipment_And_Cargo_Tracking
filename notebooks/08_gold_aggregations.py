@@ -1,7 +1,8 @@
-import os
-import sys
-
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+try:
+    import os, sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+except NameError:
+    pass
 from audit_logger import PipelineLogger
 
 from delta.tables import DeltaTable
