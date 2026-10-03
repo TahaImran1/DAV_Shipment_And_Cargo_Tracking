@@ -120,6 +120,8 @@ STATIC_DATA_REPORT_SCHEMA = StructType([
 
 MESSAGE_BODY_SCHEMA = StructType([
     StructField("PositionReport", POSITION_REPORT_SCHEMA, True),
+    StructField("StandardClassBPositionReport", POSITION_REPORT_SCHEMA, True),
+    StructField("ExtendedClassBPositionReport", POSITION_REPORT_SCHEMA, True),
     StructField("ShipStaticData", SHIP_STATIC_DATA_SCHEMA, True),
     StructField("StaticDataReport", STATIC_DATA_REPORT_SCHEMA, True),
 ])

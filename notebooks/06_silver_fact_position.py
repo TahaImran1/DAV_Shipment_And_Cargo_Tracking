@@ -97,21 +97,22 @@ with PipelineLogger(spark, layer="Bronze-to-Silver (fact_vessel_position)", para
     if spark.catalog.tableExists("bronze.raw_ais_messages"):
         ais_table = spark.table("bronze.raw_ais_messages")
         
-        # Position reports live inside Message.PositionReport
+        # Position reports live inside Message.PositionReport (Class A) or Message.StandardClassBPositionReport (Class B)
+        pos_report = coalesce(col("Message.PositionReport"), col("Message.StandardClassBPositionReport"))
         ais_pos = (
             ais_table
-            .filter(col("Message.PositionReport").isNotNull())
+            .filter(col("Message.PositionReport").isNotNull() | col("Message.StandardClassBPositionReport").isNotNull())
             .select(
                 expr("uuid()").alias("position_id"),
-                coalesce(col("Message.PositionReport.UserID"), col("MetaData.MMSI")).cast("bigint").alias("mmsi"),
+                coalesce(pos_report.getItem("UserID"), col("MetaData.MMSI")).cast("bigint").alias("mmsi"),
                 # Time format in AISStream MetaData: "2026-10-03 12:35:20.008608894 +0000 UTC"
                 to_timestamp(col("MetaData.time_utc").substr(1, 19), "yyyy-MM-dd HH:mm:ss").alias("timestamp"),
-                coalesce(col("Message.PositionReport.Latitude"), col("MetaData.latitude")).cast("double").alias("latitude"),
-                coalesce(col("Message.PositionReport.Longitude"), col("MetaData.longitude")).cast("double").alias("longitude"),
-                col("Message.PositionReport.Sog").cast("double").alias("sog"),
-                col("Message.PositionReport.Cog").cast("double").alias("cog"),
-                col("Message.PositionReport.TrueHeading").cast("double").alias("heading"),
-                col("Message.PositionReport.NavigationalStatus").cast("int").alias("nav_status"),
+                coalesce(pos_report.getItem("Latitude"), col("MetaData.latitude")).cast("double").alias("latitude"),
+                coalesce(pos_report.getItem("Longitude"), col("MetaData.longitude")).cast("double").alias("longitude"),
+                pos_report.getItem("Sog").cast("double").alias("sog"),
+                pos_report.getItem("Cog").cast("double").alias("cog"),
+                pos_report.getItem("TrueHeading").cast("double").alias("heading"),
+                pos_report.getItem("NavigationalStatus").cast("int").alias("nav_status"),
                 col("source"),
                 col("batch_id"),
                 col("load_timestamp"),

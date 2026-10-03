@@ -25,14 +25,14 @@ if not API_KEY:
     print("ERROR: AISSTREAM_API_KEY not set in .env", file=sys.stderr)
     sys.exit(1)
 
-# Galveston Entrance & Anchorage (Bolivar Roads & Port of Galveston approaches)
-# Extends NOAA box by ~5 miles west to include anchored vessels and harbor wharves
-# Target data volume: ~3 to 5 MB per day (meets >= 1 MB requirement without exceeding 5 MB)
+# Galveston Entrance, Port of Galveston & Texas City Industrial Channel
+# Includes: Galveston sea buoy, Bolivar Roads anchorage, Port of Galveston, Texas City chemical docks, and Lower Galveston Bay up to Bayport approach
+# Target data volume: ~3 to 5 MB per day
 # Format required by AISStream: [[max_lat, min_lon], [min_lat, max_lon]]
 BOUNDING_BOX = [
     [
-        float(os.getenv("AIS_MAX_LAT", "29.400")),
-        float(os.getenv("AIS_MIN_LON", "-94.820")),
+        float(os.getenv("AIS_MAX_LAT", "29.600")),
+        float(os.getenv("AIS_MIN_LON", "-94.950")),
     ],
     [
         float(os.getenv("AIS_MIN_LAT", "29.200")),
@@ -40,7 +40,13 @@ BOUNDING_BOX = [
     ],
 ]
 
-MESSAGE_TYPES = ["PositionReport", "ShipStaticData", "StaticDataReport"]
+MESSAGE_TYPES = [
+    "PositionReport",
+    "StandardClassBPositionReport",
+    "ExtendedClassBPositionReport",
+    "ShipStaticData",
+    "StaticDataReport",
+]
 
 OUTPUT_DIR = Path("data/samples/incremental_load")
 BATCH_SIZE = int(os.getenv("AIS_BATCH_SIZE", "100"))  # records per file

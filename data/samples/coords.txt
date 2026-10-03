@@ -7,13 +7,13 @@ Real size: ~218 MB
 File: AIS_Full_Load.csv
 
 AISStream Live Collector:
-Region: Galveston Harbor Entrance & Bolivar Roads Anchorage
+Region: Galveston Bay, Texas City & Entrance Channel
 Bounding box (AISStream format [[max_lat, min_lon], [min_lat, max_lon]]):
-[[29.400, -94.820], [29.200, -94.500]]
-Corresponds to (min_lon, min_lat, max_lon, max_lat): [-94.820, 29.200, -94.500, 29.400]
-Note: Extends NOAA entrance corridor by ~5 miles west to capture anchored & docked ships in Bolivar Roads.
-Target Data Volume: ~3 to 5 MB / day (comfortably satisfies >= 1 MB requirement and stays under 5 MB max).
-Message Types: PositionReport, ShipStaticData, StaticDataReport
+[[29.600, -94.950], [29.200, -94.500]]
+Corresponds to (min_lon, min_lat, max_lon, max_lat): [-94.950, 29.200, -94.500, 29.600]
+Coverage: Galveston sea buoy, Bolivar Roads anchorage, Port of Galveston, Texas City chemical docks, and Lower Galveston Bay up to Bayport approach
+Target Data Volume: ~3 to 5 MB / day
+Message Types: PositionReport, StandardClassBPositionReport, ExtendedClassBPositionReport, ShipStaticData, StaticDataReport
 Output: Appends to data/samples/incremental_load/ais_daily_YYYYMMDD.json
 Note: API key is loaded securely from .env (AISSTREAM_API_KEY)
 
