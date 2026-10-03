@@ -1,9 +1,10 @@
-# Databricks notebook source
-# COMMAND ----------
-# MAGIC %run ./99_audit_logger
-
-# COMMAND ----------
+import os
+import sys
 import re
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from audit_logger import PipelineLogger
+
 from delta.tables import DeltaTable
 from pyspark.sql.functions import (
     col,
@@ -18,7 +19,12 @@ from pyspark.sql.functions import (
 )
 from pyspark.sql.types import DoubleType
 
-# COMMAND ----------
+try:
+    spark
+except NameError:
+    from pyspark.sql import SparkSession
+    spark = SparkSession.builder.getOrCreate()
+
 spark.sql("CREATE SCHEMA IF NOT EXISTS silver")
 spark.sql("""
     CREATE TABLE IF NOT EXISTS silver.dim_port (
@@ -40,7 +46,6 @@ spark.sql("""
     )
 """)
 
-# COMMAND ----------
 @udf(returnType=DoubleType())
 def dms_to_decimal(dms_str):
     if not dms_str:
@@ -62,7 +67,6 @@ def dms_to_decimal(dms_str):
     except Exception:
         return None
 
-# COMMAND ----------
 with PipelineLogger(spark, layer="Bronze-to-Silver (dim_port)", parameter="wpi-reference") as logger:
     if not spark.catalog.tableExists("bronze.raw_wpi_ports"):
         raise RuntimeError("Table bronze.raw_wpi_ports not found. Run 03_bronze_wpi_reference first.")

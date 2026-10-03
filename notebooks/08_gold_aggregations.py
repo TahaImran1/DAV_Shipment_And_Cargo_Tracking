@@ -1,8 +1,9 @@
-# Databricks notebook source
-# COMMAND ----------
-# MAGIC %run ./99_audit_logger
+import os
+import sys
 
-# COMMAND ----------
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from audit_logger import PipelineLogger
+
 from delta.tables import DeltaTable
 from pyspark.sql.functions import (
     col,
@@ -21,7 +22,12 @@ from pyspark.sql.functions import (
     when,
 )
 
-# COMMAND ----------
+try:
+    spark
+except NameError:
+    from pyspark.sql import SparkSession
+    spark = SparkSession.builder.getOrCreate()
+
 spark.sql("CREATE SCHEMA IF NOT EXISTS gold")
 
 spark.sql("""
@@ -79,7 +85,6 @@ spark.sql("""
     USING DELTA
 """)
 
-# COMMAND ----------
 with PipelineLogger(spark, layer="Silver-to-Gold (Aggregations)", parameter="all-gold-tables") as logger:
     if not spark.catalog.tableExists("silver.fact_vessel_position"):
         print("Table silver.fact_vessel_position does not exist yet.")
@@ -93,7 +98,6 @@ with PipelineLogger(spark, layer="Silver-to-Gold (Aggregations)", parameter="all
         total_inserted = 0
         total_updated = 0
 
-        # gold_vessel_activity
         vessel_daily = (
             facts
             .withColumn("activity_date", to_date(col("timestamp")))
@@ -123,7 +127,6 @@ with PipelineLogger(spark, layer="Silver-to-Gold (Aggregations)", parameter="all
         total_inserted += int(h1.get("numTargetRowsInserted", 0))
         total_updated += int(h1.get("numTargetRowsUpdated", 0))
 
-        # gold_port_performance
         port_activity = (
             facts
             .withColumn("activity_date", to_date(col("timestamp")))
@@ -156,7 +159,6 @@ with PipelineLogger(spark, layer="Silver-to-Gold (Aggregations)", parameter="all
         total_inserted += int(h2.get("numTargetRowsInserted", 0))
         total_updated += int(h2.get("numTargetRowsUpdated", 0))
 
-        # gold_route_performance
         if voyages is not None:
             route_summary = (
                 voyages
@@ -180,7 +182,6 @@ with PipelineLogger(spark, layer="Silver-to-Gold (Aggregations)", parameter="all
             total_inserted += int(h3.get("numTargetRowsInserted", 0))
             total_updated += int(h3.get("numTargetRowsUpdated", 0))
 
-        # gold_daily_maritime_activity
         daily_traffic = (
             facts
             .withColumn("activity_date", to_date(col("timestamp")))

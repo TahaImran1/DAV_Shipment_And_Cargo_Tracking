@@ -1,33 +1,41 @@
-# Databricks notebook source
-# COMMAND ----------
-# MAGIC %run ./99_audit_logger
+import os
+import sys
 
-# COMMAND ----------
-from pyspark.sql.functions import (
-    current_timestamp,
-    lit,
-    col,
-    expr,
-)
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from audit_logger import PipelineLogger
+
+from pyspark.sql.functions import current_timestamp, lit, col, expr
 from pyspark.sql.types import (
     StructType,
     StructField,
     StringType,
     IntegerType,
-    DoubleType,
 )
 
-# COMMAND ----------
 try:
-    dbutils.widgets.text("source_path", "/FileStore/tables/WPI.csv", "Source WPI Path")
-    dbutils.widgets.text("batch_id", "wpi-reference-v1", "Batch Identifier")
-    source_path = dbutils.widgets.get("source_path")
-    batch_id = dbutils.widgets.get("batch_id")
-except Exception:
+    spark
+except NameError:
+    from pyspark.sql import SparkSession
+    spark = SparkSession.builder.getOrCreate()
+
+try:
+    dbutils
+except NameError:
+    dbutils = None
+
+if dbutils is not None:
+    try:
+        dbutils.widgets.text("source_path", "/FileStore/tables/WPI.csv", "Source WPI Path")
+        dbutils.widgets.text("batch_id", "wpi-reference-v1", "Batch Identifier")
+        source_path = dbutils.widgets.get("source_path")
+        batch_id = dbutils.widgets.get("batch_id")
+    except Exception:
+        source_path = "data/samples/wpi/WPI.csv"
+        batch_id = "wpi-reference-v1"
+else:
     source_path = "data/samples/wpi/WPI.csv"
     batch_id = "wpi-reference-v1"
 
-# COMMAND ----------
 schema = StructType([
     StructField("portNumber", IntegerType(), True),
     StructField("portName", StringType(), True),
@@ -130,7 +138,6 @@ schema = StructType([
     StructField("_corrupt_record", StringType(), True),
 ])
 
-# COMMAND ----------
 with PipelineLogger(spark, layer="Raw-to-Bronze (WPI)", parameter=batch_id) as logger:
     raw_df = (
         spark.read.format("csv")

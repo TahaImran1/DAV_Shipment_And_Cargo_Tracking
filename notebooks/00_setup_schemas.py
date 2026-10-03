@@ -1,8 +1,15 @@
-# Databricks notebook source
-# COMMAND ----------
-# MAGIC %run ./99_audit_logger
+import os
+import sys
 
-# COMMAND ----------
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from audit_logger import PipelineLogger, init_audit_table
+
+try:
+    spark
+except NameError:
+    from pyspark.sql import SparkSession
+    spark = SparkSession.builder.getOrCreate()
+
 with PipelineLogger(spark, layer="Platform-Setup", parameter="all_schemas") as logger:
     for s in ["bronze", "silver", "gold", "maritime_ops"]:
         spark.sql(f"CREATE SCHEMA IF NOT EXISTS {s}")

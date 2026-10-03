@@ -1,8 +1,9 @@
-# Databricks notebook source
-# COMMAND ----------
-# MAGIC %run ./99_audit_logger
+import os
+import sys
 
-# COMMAND ----------
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from audit_logger import PipelineLogger
+
 from delta.tables import DeltaTable
 from pyspark.sql.functions import (
     col,
@@ -20,7 +21,12 @@ from pyspark.sql.functions import (
 )
 from pyspark.sql.window import Window
 
-# COMMAND ----------
+try:
+    spark
+except NameError:
+    from pyspark.sql import SparkSession
+    spark = SparkSession.builder.getOrCreate()
+
 spark.sql("CREATE SCHEMA IF NOT EXISTS silver")
 spark.sql("""
     CREATE TABLE IF NOT EXISTS silver.dim_voyage (
@@ -42,7 +48,6 @@ spark.sql("""
     )
 """)
 
-# COMMAND ----------
 with PipelineLogger(spark, layer="Bronze-to-Silver (dim_voyage)", parameter="derive-voyages") as logger:
     if not spark.catalog.tableExists("silver.fact_vessel_position"):
         print("Table silver.fact_vessel_position does not exist yet.")

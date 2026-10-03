@@ -1,8 +1,9 @@
-# Databricks notebook source
-# COMMAND ----------
-# MAGIC %run ./99_audit_logger
+import os
+import sys
 
-# COMMAND ----------
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from audit_logger import PipelineLogger
+
 from pyspark.sql.functions import current_timestamp, lit, col, expr
 from pyspark.sql.types import (
     StructType,
@@ -14,17 +15,30 @@ from pyspark.sql.types import (
     BooleanType,
 )
 
-# COMMAND ----------
 try:
-    dbutils.widgets.text("batch_file", "/FileStore/tables/incremental_load/", "Source Batch File or Directory")
-    dbutils.widgets.text("batch_id", "incremental-auto", "Batch Identifier")
-    batch_file = dbutils.widgets.get("batch_file")
-    batch_id = dbutils.widgets.get("batch_id")
-except Exception:
+    spark
+except NameError:
+    from pyspark.sql import SparkSession
+    spark = SparkSession.builder.getOrCreate()
+
+try:
+    dbutils
+except NameError:
+    dbutils = None
+
+if dbutils is not None:
+    try:
+        dbutils.widgets.text("batch_file", "/FileStore/tables/incremental_load/", "Source Batch File or Directory")
+        dbutils.widgets.text("batch_id", "incremental-auto", "Batch Identifier")
+        batch_file = dbutils.widgets.get("batch_file")
+        batch_id = dbutils.widgets.get("batch_id")
+    except Exception:
+        batch_file = "data/samples/incremental_load/"
+        batch_id = "incremental-auto"
+else:
     batch_file = "data/samples/incremental_load/"
     batch_id = "incremental-auto"
 
-# COMMAND ----------
 dimension_schema = StructType([
     StructField("A", IntegerType(), True),
     StructField("B", IntegerType(), True),
@@ -111,7 +125,6 @@ schema = StructType([
     StructField("_corrupt_record", StringType(), True),
 ])
 
-# COMMAND ----------
 with PipelineLogger(spark, layer="Raw-to-Bronze (AISStream)", parameter=batch_id) as logger:
     raw_df = (
         spark.read.format("json")
