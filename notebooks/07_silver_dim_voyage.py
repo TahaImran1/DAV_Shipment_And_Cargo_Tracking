@@ -1,21 +1,5 @@
 # Databricks notebook source
 # COMMAND ----------
-"""
-Notebook: 07_silver_dim_voyage
-Layer: Bronze-to-Silver (Dimension Table)
-Source: silver.fact_vessel_position & silver.dim_port
-Target Table: silver.dim_voyage
-Primary Key: voyage_id
-
-Requirements Enforced:
-  - Derives voyage trips based on temporal gaps (> 4 hours) and nearest port identification
-  - Calculates trip metrics: start_ts, end_ts, total_points, avg_sog, max_sog
-  - Idempotent MERGE INTO on voyage_id
-  - load_timestamp tracked on every record
-  - Execution audit logged to maritime_ops.pipeline_execution_logs
-"""
-
-# COMMAND ----------
 # MAGIC %run ./99_audit_logger
 
 # COMMAND ----------
@@ -37,7 +21,6 @@ from pyspark.sql.functions import (
 from pyspark.sql.window import Window
 
 # COMMAND ----------
-# Ensure Silver Schema and dim_voyage Delta Table exist
 spark.sql("CREATE SCHEMA IF NOT EXISTS silver")
 spark.sql("""
     CREATE TABLE IF NOT EXISTS silver.dim_voyage (
@@ -62,15 +45,13 @@ spark.sql("""
 # COMMAND ----------
 with PipelineLogger(spark, layer="Bronze-to-Silver (dim_voyage)", parameter="derive-voyages") as logger:
     if not spark.catalog.tableExists("silver.fact_vessel_position"):
-        print("[WARN] Table silver.fact_vessel_position does not exist yet.")
+        print("Table silver.fact_vessel_position does not exist yet.")
         logger.set_metrics(rows_inserted=0, rows_updated=0)
     else:
         positions_df = spark.table("silver.fact_vessel_position")
         
-        # 1. Define window per vessel ordered by timestamp
         vessel_window = Window.partitionBy("mmsi").orderBy("timestamp")
 
-        # Detect gaps > 4 hours (14,400 seconds) between consecutive reports to segment voyages
         segmented_df = (
             positions_df
             .withColumn("prev_ts", lag("timestamp").over(vessel_window))
@@ -82,7 +63,6 @@ with PipelineLogger(spark, layer="Bronze-to-Silver (dim_voyage)", parameter="der
             .withColumn("voyage_id", concat_ws("-", col("mmsi").cast("string"), col("voyage_seq").cast("string")))
         )
 
-        # 2. Aggregate voyage statistics
         voyages_summary = (
             segmented_df
             .groupBy("voyage_id", "mmsi")
@@ -98,7 +78,6 @@ with PipelineLogger(spark, layer="Bronze-to-Silver (dim_voyage)", parameter="der
             .withColumn("load_timestamp", current_timestamp())
         )
 
-        # 3. Idempotent MERGE into silver.dim_voyage
         target_table = DeltaTable.forName(spark, "silver.dim_voyage")
 
         (
@@ -117,4 +96,4 @@ with PipelineLogger(spark, layer="Bronze-to-Silver (dim_voyage)", parameter="der
         updated = int(history.get("numTargetRowsUpdated", 0))
 
         logger.set_metrics(rows_inserted=inserted, rows_updated=updated)
-        print(f"[SUCCESS] MERGE completed on silver.dim_voyage: {inserted} inserted, {updated} updated")
+        print(f"MERGE completed on silver.dim_voyage: {inserted} inserted, {updated} updated")

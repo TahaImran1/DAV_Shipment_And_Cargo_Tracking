@@ -1,13 +1,5 @@
 # Databricks notebook source
 # COMMAND ----------
-"""
-Audit Logging Utility for Maritime Medallion Data Pipeline
-Schema: maritime_ops.pipeline_execution_logs
-
-Provides a standardized, reusable audit logger that writes execution metrics
-(batch parameter, duration, rows inserted/updated, status, errors) to the ops catalog.
-"""
-
 import time
 import uuid
 import traceback
@@ -37,9 +29,6 @@ AUDIT_TABLE_NAME = "maritime_ops.pipeline_execution_logs"
 
 # COMMAND ----------
 def init_audit_table(spark: SparkSession) -> None:
-    """
-    Ensures maritime_ops schema and pipeline_execution_logs Delta table exist.
-    """
     spark.sql("CREATE SCHEMA IF NOT EXISTS maritime_ops")
     spark.sql(f"""
         CREATE TABLE IF NOT EXISTS {AUDIT_TABLE_NAME} (
@@ -59,15 +48,6 @@ def init_audit_table(spark: SparkSession) -> None:
 
 # COMMAND ----------
 class PipelineLogger:
-    """
-    Context manager and execution tracker for pipeline operations.
-
-    Usage:
-        with PipelineLogger(spark, layer="Raw-to-Bronze", parameter="2024-01-01") as logger:
-            # perform Spark actions
-            logger.set_metrics(rows_inserted=1500, rows_updated=0)
-    """
-
     def __init__(self, spark: SparkSession, layer: str, parameter: str = None):
         self.spark = spark
         self.layer = layer
@@ -98,7 +78,6 @@ class PipelineLogger:
             self.error_message = None
 
         self._persist_log()
-        # Return False so any unhandled exceptions propagate upwards
         return False
 
     def _persist_log(self):
@@ -117,5 +96,4 @@ class PipelineLogger:
             df = self.spark.createDataFrame(log_data, schema=AUDIT_LOG_SCHEMA)
             df.write.format("delta").mode("append").saveAsTable(AUDIT_TABLE_NAME)
         except Exception as e:
-            # Audit failure should be visible on console
-            print(f"[ERROR] Failed to persist audit log: {e}")
+            print(f"Failed to write audit log: {e}")

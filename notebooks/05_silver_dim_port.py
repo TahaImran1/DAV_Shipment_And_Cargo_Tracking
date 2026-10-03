@@ -1,21 +1,5 @@
 # Databricks notebook source
 # COMMAND ----------
-"""
-Notebook: 05_silver_dim_port
-Layer: Bronze-to-Silver (Dimension Table)
-Source: bronze.raw_wpi_ports (World Port Index)
-Target Table: silver.dim_port
-Primary Key: port_code
-
-Requirements Enforced:
-  - Parses DMS coordinates (e.g., 29°45'00"N) into decimal degrees
-  - Generates standardized port_code (UN/LOCODE or WPI fallback)
-  - Idempotent MERGE INTO on port_code
-  - load_timestamp tracked on every record
-  - Execution audit logged to maritime_ops.pipeline_execution_logs
-"""
-
-# COMMAND ----------
 # MAGIC %run ./99_audit_logger
 
 # COMMAND ----------
@@ -35,7 +19,6 @@ from pyspark.sql.functions import (
 from pyspark.sql.types import DoubleType
 
 # COMMAND ----------
-# Ensure Silver Schema and dim_port Delta Table exist
 spark.sql("CREATE SCHEMA IF NOT EXISTS silver")
 spark.sql("""
     CREATE TABLE IF NOT EXISTS silver.dim_port (
@@ -58,14 +41,12 @@ spark.sql("""
 """)
 
 # COMMAND ----------
-# Helper UDF to parse Degrees-Minutes-Seconds (DMS) string to Decimal Degrees
 @udf(returnType=DoubleType())
 def dms_to_decimal(dms_str):
     if not dms_str:
         return None
     try:
         clean = dms_str.strip().replace('"', '').replace("'", "")
-        # Matches patterns like: 29°4500N or 29°45N or decimal
         m = re.match(r"(\d+)[°\s]+(\d+)?(?:[\'\s]+(\d+))?\s*([NSEWnsew])?", clean)
         if not m:
             return float(clean)
@@ -88,7 +69,6 @@ with PipelineLogger(spark, layer="Bronze-to-Silver (dim_port)", parameter="wpi-r
 
     raw_wpi = spark.table("bronze.raw_wpi_ports")
 
-    # Clean, convert coordinates, and formulate clean port_code
     cleaned_ports = (
         raw_wpi
         .filter(col("portNumber").isNotNull())
@@ -112,7 +92,6 @@ with PipelineLogger(spark, layer="Bronze-to-Silver (dim_port)", parameter="wpi-r
         .dropDuplicates(["port_code"])
     )
 
-    # Idempotent MERGE into silver.dim_port
     target_table = DeltaTable.forName(spark, "silver.dim_port")
 
     (
@@ -131,4 +110,4 @@ with PipelineLogger(spark, layer="Bronze-to-Silver (dim_port)", parameter="wpi-r
     updated = int(history.get("numTargetRowsUpdated", 0))
 
     logger.set_metrics(rows_inserted=inserted, rows_updated=updated)
-    print(f"[SUCCESS] MERGE completed on silver.dim_port: {inserted} inserted, {updated} updated")
+    print(f"MERGE completed on silver.dim_port: {inserted} inserted, {updated} updated")

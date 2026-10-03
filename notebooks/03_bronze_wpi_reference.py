@@ -1,20 +1,5 @@
 # Databricks notebook source
 # COMMAND ----------
-"""
-Notebook: 03_bronze_wpi_reference
-Layer: Raw-to-Bronze
-Source: National Geospatial-Intelligence Agency (NGA) World Port Index (Pub 150)
-Target Table: bronze.raw_wpi_ports
-
-Requirements Enforced:
-  - Parameterised path via widgets (source_path, batch_id)
-  - Explicit StructType schema (inferSchema=True is STRICTLY FORBIDDEN)
-  - Adds standard metadata: source, ingestion_timestamp, batch_id, load_timestamp
-  - Quarantine on schema drift or corrupt records
-  - Execution audit logged to maritime_ops.pipeline_execution_logs
-"""
-
-# COMMAND ----------
 # MAGIC %run ./99_audit_logger
 
 # COMMAND ----------
@@ -33,7 +18,6 @@ from pyspark.sql.types import (
 )
 
 # COMMAND ----------
-# Widget Parameters
 try:
     dbutils.widgets.text("source_path", "/FileStore/tables/WPI.csv", "Source WPI Path")
     dbutils.widgets.text("batch_id", "wpi-reference-v1", "Batch Identifier")
@@ -43,11 +27,8 @@ except Exception:
     source_path = "data/samples/wpi/WPI.csv"
     batch_id = "wpi-reference-v1"
 
-print(f"Ingesting World Port Index (WPI): source_path='{source_path}', batch_id='{batch_id}'")
-
 # COMMAND ----------
-# Explicit StructType Schema for WPI (Strictly defined)
-WPI_BRONZE_SCHEMA = StructType([
+schema = StructType([
     StructField("portNumber", IntegerType(), True),
     StructField("portName", StringType(), True),
     StructField("regionNumber", IntegerType(), True),
@@ -109,34 +90,22 @@ WPI_BRONZE_SCHEMA = StructType([
     StructField("lifts50", StringType(), True),
     StructField("lifts25", StringType(), True),
     StructField("lifts0", StringType(), True),
-    StructField("srLongshore", StringType(), True),
-    StructField("srElectrical", StringType(), True),
-    StructField("srSteam", StringType(), True),
-    StructField("srNavigEquip", StringType(), True),
-    StructField("srElectRepair", StringType(), True),
-    StructField("suProvisions", StringType(), True),
-    StructField("suWater", StringType(), True),
-    StructField("suFuel", StringType(), True),
-    StructField("suDiesel", StringType(), True),
-    StructField("suDeck", StringType(), True),
-    StructField("suEngine", StringType(), True),
+    StructField("srServices", StringType(), True),
+    StructField("srProvisions", StringType(), True),
+    StructField("srWater", StringType(), True),
+    StructField("srFuel", StringType(), True),
+    StructField("srDiesel", StringType(), True),
+    StructField("srDeck", StringType(), True),
+    StructField("srEngine", StringType(), True),
     StructField("repairCode", StringType(), True),
     StructField("drydock", StringType(), True),
     StructField("railway", StringType(), True),
-    StructField("qtSanitation", StringType(), True),
-    StructField("suAviationFuel", StringType(), True),
-    StructField("harborUse", StringType(), True),
-    StructField("ukcMgmtSystem", StringType(), True),
-    StructField("portSecurity", StringType(), True),
-    StructField("etaMessage", StringType(), True),
-    StructField("searchAndRescue", StringType(), True),
-    StructField("tss", StringType(), True),
-    StructField("vts", StringType(), True),
-    StructField("cht", StringType(), True),
-    StructField("globalId", StringType(), True),
-    StructField("loRoro", StringType(), True),
-    StructField("loSolidBulk", StringType(), True),
+    StructField("loEta", StringType(), True),
+    StructField("loCable", StringType(), True),
+    StructField("loIce", StringType(), True),
+    StructField("loRollOn", StringType(), True),
     StructField("loContainer", StringType(), True),
+    StructField("loBulk", StringType(), True),
     StructField("loBreakBulk", StringType(), True),
     StructField("loOilTerm", StringType(), True),
     StructField("loLongTerm", StringType(), True),
@@ -168,7 +137,7 @@ with PipelineLogger(spark, layer="Raw-to-Bronze (WPI)", parameter=batch_id) as l
         .option("header", "true")
         .option("mode", "PERMISSIVE")
         .option("columnNameOfCorruptRecord", "_corrupt_record")
-        .schema(WPI_BRONZE_SCHEMA)
+        .schema(schema)
         .load(source_path)
     )
 
@@ -182,12 +151,12 @@ with PipelineLogger(spark, layer="Raw-to-Bronze (WPI)", parameter=batch_id) as l
                 lit("wpi").alias("source"),
                 lit(batch_id).alias("batch_id"),
                 col("_corrupt_record").alias("raw_payload"),
-                lit("WPI CSV malformed line").alias("error_reason"),
+                lit("Malformed WPI CSV record").alias("error_reason"),
                 current_timestamp().alias("quarantine_timestamp"),
             )
         )
         quarantine_records.write.format("delta").mode("append").saveAsTable("bronze.quarantine")
-        print(f"[WARN] Quarantined {corrupt_count} records to bronze.quarantine")
+        print(f"Quarantined {corrupt_count} corrupt records")
 
     valid_df = (
         raw_df.filter(col("_corrupt_record").isNull())
@@ -207,4 +176,4 @@ with PipelineLogger(spark, layer="Raw-to-Bronze (WPI)", parameter=batch_id) as l
 
     valid_count = valid_df.count()
     logger.set_metrics(rows_inserted=valid_count, rows_updated=0)
-    print(f"[SUCCESS] Ingested {valid_count} ports into bronze.raw_wpi_ports")
+    print(f"Ingested {valid_count} records into bronze.raw_wpi_ports")

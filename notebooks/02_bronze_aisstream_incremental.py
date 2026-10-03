@@ -1,33 +1,9 @@
 # Databricks notebook source
 # COMMAND ----------
-"""
-Notebook: 02_bronze_aisstream_incremental
-Layer: Raw-to-Bronze
-Source: AISStream Live WebSocket Incremental Feed (JSON / JSON Lines)
-Target Table: bronze.raw_ais_messages
-
-Requirements Enforced:
-  - Parameterised ingestion via Databricks widgets (batch_file, batch_id)
-  - Explicit StructType schema (inferSchema=True is STRICTLY FORBIDDEN)
-  - Supports PositionReport (Types 1-3), ShipStaticData (Type 5), StaticDataReport (Type 24)
-  - Metadata columns added: source, ingestion_timestamp, batch_id, load_timestamp
-  - Corrupt records quarantined to bronze.quarantine
-  - Additive schema drift supported via mergeSchema=True
-  - Execution audit logged to maritime_ops.pipeline_execution_logs
-"""
-
-# COMMAND ----------
 # MAGIC %run ./99_audit_logger
 
 # COMMAND ----------
-from pyspark.sql.functions import (
-    current_timestamp,
-    lit,
-    col,
-    expr,
-    to_json,
-    struct,
-)
+from pyspark.sql.functions import current_timestamp, lit, col, expr
 from pyspark.sql.types import (
     StructType,
     StructField,
@@ -39,7 +15,6 @@ from pyspark.sql.types import (
 )
 
 # COMMAND ----------
-# Widget Parameters
 try:
     dbutils.widgets.text("batch_file", "/FileStore/tables/incremental_load/", "Source Batch File or Directory")
     dbutils.widgets.text("batch_id", "incremental-auto", "Batch Identifier")
@@ -49,27 +24,22 @@ except Exception:
     batch_file = "data/samples/incremental_load/"
     batch_id = "incremental-auto"
 
-print(f"Ingesting AISStream Incremental Batch: batch_file='{batch_file}', batch_id='{batch_id}'")
-
 # COMMAND ----------
-# Dimension Struct (Ship Dimensions: Distance from GPS antenna to Bow, Stern, Port, Starboard)
-DIMENSION_SCHEMA = StructType([
+dimension_schema = StructType([
     StructField("A", IntegerType(), True),
     StructField("B", IntegerType(), True),
     StructField("C", IntegerType(), True),
     StructField("D", IntegerType(), True),
 ])
 
-# ETA Struct
-ETA_SCHEMA = StructType([
+eta_schema = StructType([
     StructField("Month", IntegerType(), True),
     StructField("Day", IntegerType(), True),
     StructField("Hour", IntegerType(), True),
     StructField("Minute", IntegerType(), True),
 ])
 
-# PositionReport Struct (Types 1, 2, 3)
-POSITION_REPORT_SCHEMA = StructType([
+position_report_schema = StructType([
     StructField("MessageID", IntegerType(), True),
     StructField("RepeatIndicator", IntegerType(), True),
     StructField("UserID", LongType(), True),
@@ -89,8 +59,7 @@ POSITION_REPORT_SCHEMA = StructType([
     StructField("CommunicationState", LongType(), True),
 ])
 
-# ShipStaticData Struct (Type 5)
-SHIP_STATIC_DATA_SCHEMA = StructType([
+ship_static_data_schema = StructType([
     StructField("MessageID", IntegerType(), True),
     StructField("RepeatIndicator", IntegerType(), True),
     StructField("UserID", LongType(), True),
@@ -100,17 +69,16 @@ SHIP_STATIC_DATA_SCHEMA = StructType([
     StructField("CallSign", StringType(), True),
     StructField("Name", StringType(), True),
     StructField("Type", IntegerType(), True),
-    StructField("Dimension", DIMENSION_SCHEMA, True),
+    StructField("Dimension", dimension_schema, True),
     StructField("FixType", IntegerType(), True),
-    StructField("Eta", ETA_SCHEMA, True),
+    StructField("Eta", eta_schema, True),
     StructField("MaximumStaticDraught", DoubleType(), True),
     StructField("Destination", StringType(), True),
     StructField("Dte", IntegerType(), True),
     StructField("Spare", BooleanType(), True),
 ])
 
-# StaticDataReport Struct (Type 24)
-STATIC_DATA_REPORT_SCHEMA = StructType([
+static_data_report_schema = StructType([
     StructField("MessageID", IntegerType(), True),
     StructField("RepeatIndicator", IntegerType(), True),
     StructField("UserID", LongType(), True),
@@ -118,15 +86,15 @@ STATIC_DATA_REPORT_SCHEMA = StructType([
     StructField("PartNumber", IntegerType(), True),
 ])
 
-MESSAGE_BODY_SCHEMA = StructType([
-    StructField("PositionReport", POSITION_REPORT_SCHEMA, True),
-    StructField("StandardClassBPositionReport", POSITION_REPORT_SCHEMA, True),
-    StructField("ExtendedClassBPositionReport", POSITION_REPORT_SCHEMA, True),
-    StructField("ShipStaticData", SHIP_STATIC_DATA_SCHEMA, True),
-    StructField("StaticDataReport", STATIC_DATA_REPORT_SCHEMA, True),
+message_body_schema = StructType([
+    StructField("PositionReport", position_report_schema, True),
+    StructField("StandardClassBPositionReport", position_report_schema, True),
+    StructField("ExtendedClassBPositionReport", position_report_schema, True),
+    StructField("ShipStaticData", ship_static_data_schema, True),
+    StructField("StaticDataReport", static_data_report_schema, True),
 ])
 
-METADATA_SCHEMA = StructType([
+metadata_schema = StructType([
     StructField("MMSI", LongType(), True),
     StructField("MMSI_String", LongType(), True),
     StructField("ShipName", StringType(), True),
@@ -135,27 +103,24 @@ METADATA_SCHEMA = StructType([
     StructField("time_utc", StringType(), True),
 ])
 
-# Full Top-Level AISStream JSON Schema (Strict StructType - NO inferSchema)
-AISSTREAM_BRONZE_SCHEMA = StructType([
-    StructField("MetaData", METADATA_SCHEMA, True),
+schema = StructType([
+    StructField("MetaData", metadata_schema, True),
     StructField("MessageType", StringType(), True),
-    StructField("Message", MESSAGE_BODY_SCHEMA, True),
+    StructField("Message", message_body_schema, True),
     StructField("_collected_at", StringType(), True),
     StructField("_corrupt_record", StringType(), True),
 ])
 
 # COMMAND ----------
 with PipelineLogger(spark, layer="Raw-to-Bronze (AISStream)", parameter=batch_id) as logger:
-    # 1. Read JSON batches with explicit schema and corrupt-record capture
     raw_df = (
         spark.read.format("json")
         .option("mode", "PERMISSIVE")
         .option("columnNameOfCorruptRecord", "_corrupt_record")
-        .schema(AISSTREAM_BRONZE_SCHEMA)
+        .schema(schema)
         .load(batch_file)
     )
 
-    # 2. Quarantine any corrupt or unparseable JSON records
     corrupt_df = raw_df.filter(col("_corrupt_record").isNotNull())
     corrupt_count = corrupt_df.count()
 
@@ -166,14 +131,13 @@ with PipelineLogger(spark, layer="Raw-to-Bronze (AISStream)", parameter=batch_id
                 lit("aisstream").alias("source"),
                 lit(batch_id).alias("batch_id"),
                 col("_corrupt_record").alias("raw_payload"),
-                lit("JSON decode or schema mismatch error").alias("error_reason"),
+                lit("Malformed JSON record").alias("error_reason"),
                 current_timestamp().alias("quarantine_timestamp"),
             )
         )
         quarantine_records.write.format("delta").mode("append").saveAsTable("bronze.quarantine")
-        print(f"[WARN] Quarantined {corrupt_count} records to bronze.quarantine")
+        print(f"Quarantined {corrupt_count} records")
 
-    # 3. Add standard metadata columns
     valid_df = (
         raw_df.filter(col("_corrupt_record").isNull())
         .drop("_corrupt_record")
@@ -183,7 +147,6 @@ with PipelineLogger(spark, layer="Raw-to-Bronze (AISStream)", parameter=batch_id
         .withColumn("load_timestamp", current_timestamp())
     )
 
-    # 4. Ingest into Bronze Delta Table
     (
         valid_df.write.format("delta")
         .mode("append")
@@ -193,4 +156,4 @@ with PipelineLogger(spark, layer="Raw-to-Bronze (AISStream)", parameter=batch_id
 
     valid_count = valid_df.count()
     logger.set_metrics(rows_inserted=valid_count, rows_updated=0)
-    print(f"[SUCCESS] Ingested {valid_count} records into bronze.raw_ais_messages")
+    print(f"Ingested {valid_count} records into bronze.raw_ais_messages")

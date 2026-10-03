@@ -1,24 +1,5 @@
 # Databricks notebook source
 # COMMAND ----------
-"""
-Notebook: 08_gold_aggregations
-Layer: Silver-to-Gold (Business Aggregations Only)
-Source: silver.fact_vessel_position, silver.dim_vessel, silver.dim_port, silver.dim_voyage
-
-Builds the 4 Gold Summary Tables feeding the Power BI Dashboard:
-  1. gold.gold_vessel_activity: distance, active days, average speed per vessel
-  2. gold.gold_port_performance: visits, unique vessels, traffic per port/day
-  3. gold.gold_route_performance: transit durations, route efficiency per corridor
-  4. gold.gold_daily_maritime_activity: regional density, daily fleet metrics
-
-Requirements Enforced:
-  - Built strictly on Silver star schema (fact + dims)
-  - Idempotent writes (MERGE INTO)
-  - load_timestamp tracked on every record
-  - Execution audit logged to maritime_ops.pipeline_execution_logs
-"""
-
-# COMMAND ----------
 # MAGIC %run ./99_audit_logger
 
 # COMMAND ----------
@@ -43,7 +24,6 @@ from pyspark.sql.functions import (
 # COMMAND ----------
 spark.sql("CREATE SCHEMA IF NOT EXISTS gold")
 
-# 1. DDL: gold.gold_vessel_activity
 spark.sql("""
     CREATE TABLE IF NOT EXISTS gold.gold_vessel_activity (
         mmsi BIGINT NOT NULL,
@@ -60,7 +40,6 @@ spark.sql("""
     PARTITIONED BY (activity_date)
 """)
 
-# 2. DDL: gold.gold_port_performance
 spark.sql("""
     CREATE TABLE IF NOT EXISTS gold.gold_port_performance (
         port_code STRING NOT NULL,
@@ -76,7 +55,6 @@ spark.sql("""
     PARTITIONED BY (activity_date)
 """)
 
-# 3. DDL: gold.gold_route_performance
 spark.sql("""
     CREATE TABLE IF NOT EXISTS gold.gold_route_performance (
         departure_port STRING NOT NULL,
@@ -90,7 +68,6 @@ spark.sql("""
     USING DELTA
 """)
 
-# 4. DDL: gold.gold_daily_maritime_activity
 spark.sql("""
     CREATE TABLE IF NOT EXISTS gold.gold_daily_maritime_activity (
         activity_date DATE NOT NULL,
@@ -105,7 +82,7 @@ spark.sql("""
 # COMMAND ----------
 with PipelineLogger(spark, layer="Silver-to-Gold (Aggregations)", parameter="all-gold-tables") as logger:
     if not spark.catalog.tableExists("silver.fact_vessel_position"):
-        print("[WARN] Table silver.fact_vessel_position does not exist yet. Run Silver notebooks first.")
+        print("Table silver.fact_vessel_position does not exist yet.")
         logger.set_metrics(rows_inserted=0, rows_updated=0)
     else:
         facts = spark.table("silver.fact_vessel_position")
@@ -116,9 +93,7 @@ with PipelineLogger(spark, layer="Silver-to-Gold (Aggregations)", parameter="all
         total_inserted = 0
         total_updated = 0
 
-        # -------------------------------------------------------------
-        # Table 1: gold.gold_vessel_activity
-        # -------------------------------------------------------------
+        # gold_vessel_activity
         vessel_daily = (
             facts
             .withColumn("activity_date", to_date(col("timestamp")))
@@ -127,15 +102,12 @@ with PipelineLogger(spark, layer="Silver-to-Gold (Aggregations)", parameter="all
                 spark_count("position_id").alias("total_pings"),
                 spark_round(spark_avg("sog"), 2).alias("avg_speed_knots"),
                 spark_round(spark_max("sog"), 2).alias("max_speed_knots"),
-                # Speed (knots) * active hours approximation = nautical miles
                 spark_round(spark_avg("sog") * (spark_count("position_id") / 60.0), 2).alias("estimated_distance_nm"),
             )
         )
 
         if vessels is not None:
-            vessel_daily = (
-                vessel_daily.join(vessels.select("mmsi", "vessel_name", "vessel_type"), on="mmsi", how="left")
-            )
+            vessel_daily = vessel_daily.join(vessels.select("mmsi", "vessel_name", "vessel_type"), on="mmsi", how="left")
         else:
             vessel_daily = vessel_daily.withColumn("vessel_name", lit("UNKNOWN")).withColumn("vessel_type", lit(0))
 
@@ -151,10 +123,7 @@ with PipelineLogger(spark, layer="Silver-to-Gold (Aggregations)", parameter="all
         total_inserted += int(h1.get("numTargetRowsInserted", 0))
         total_updated += int(h1.get("numTargetRowsUpdated", 0))
 
-        # -------------------------------------------------------------
-        # Table 2: gold.gold_port_performance
-        # -------------------------------------------------------------
-        # Attribute positions near Port of Houston / Galveston
+        # gold_port_performance
         port_activity = (
             facts
             .withColumn("activity_date", to_date(col("timestamp")))
@@ -187,9 +156,7 @@ with PipelineLogger(spark, layer="Silver-to-Gold (Aggregations)", parameter="all
         total_inserted += int(h2.get("numTargetRowsInserted", 0))
         total_updated += int(h2.get("numTargetRowsUpdated", 0))
 
-        # -------------------------------------------------------------
-        # Table 3: gold.gold_route_performance
-        # -------------------------------------------------------------
+        # gold_route_performance
         if voyages is not None:
             route_summary = (
                 voyages
@@ -213,9 +180,7 @@ with PipelineLogger(spark, layer="Silver-to-Gold (Aggregations)", parameter="all
             total_inserted += int(h3.get("numTargetRowsInserted", 0))
             total_updated += int(h3.get("numTargetRowsUpdated", 0))
 
-        # -------------------------------------------------------------
-        # Table 4: gold.gold_daily_maritime_activity
-        # -------------------------------------------------------------
+        # gold_daily_maritime_activity
         daily_traffic = (
             facts
             .withColumn("activity_date", to_date(col("timestamp")))
@@ -239,4 +204,4 @@ with PipelineLogger(spark, layer="Silver-to-Gold (Aggregations)", parameter="all
         total_updated += int(h4.get("numTargetRowsUpdated", 0))
 
         logger.set_metrics(rows_inserted=total_inserted, rows_updated=total_updated)
-        print(f"[SUCCESS] Gold Aggregations completed: {total_inserted} inserted, {total_updated} updated across all 4 tables.")
+        print(f"Gold Aggregations completed: {total_inserted} inserted, {total_updated} updated across all tables")

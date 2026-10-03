@@ -1,20 +1,5 @@
 # Databricks notebook source
 # COMMAND ----------
-"""
-Notebook: 04_silver_dim_vessel
-Layer: Bronze-to-Silver (Dimension Table)
-Target Table: silver.dim_vessel
-Primary Key: mmsi
-
-Requirements Enforced:
-  - Idempotent MERGE INTO on mmsi (upsert — zero duplicate rows on re-runs)
-  - Extracts dimension attributes from both historical NOAA and live AISStream (ShipStaticData Type 5)
-  - Tracks vessel name, destination, ETA, draught changes
-  - Every record includes load_timestamp
-  - Execution audit logged to maritime_ops.pipeline_execution_logs
-"""
-
-# COMMAND ----------
 # MAGIC %run ./99_audit_logger
 
 # COMMAND ----------
@@ -34,7 +19,6 @@ from pyspark.sql.functions import (
 from pyspark.sql.window import Window
 
 # COMMAND ----------
-# Ensure Silver Schema and dim_vessel Delta Table exist
 spark.sql("CREATE SCHEMA IF NOT EXISTS silver")
 spark.sql("""
     CREATE TABLE IF NOT EXISTS silver.dim_vessel (
@@ -59,9 +43,6 @@ spark.sql("""
 
 # COMMAND ----------
 with PipelineLogger(spark, layer="Bronze-to-Silver (dim_vessel)", parameter="merge-all-sources") as logger:
-    # -------------------------------------------------------------
-    # 1. Extract Vessel Data from NOAA Bronze (if table exists)
-    # -------------------------------------------------------------
     noaa_vessels_df = None
     if spark.catalog.tableExists("bronze.raw_noaa_ais"):
         noaa_vessels_df = (
@@ -82,14 +63,10 @@ with PipelineLogger(spark, layer="Bronze-to-Silver (dim_vessel)", parameter="mer
             )
         )
 
-    # -------------------------------------------------------------
-    # 2. Extract Vessel Data from AISStream Bronze (ShipStaticData & MetaData)
-    # -------------------------------------------------------------
     ais_vessels_df = None
     if spark.catalog.tableExists("bronze.raw_ais_messages"):
         ais_table = spark.table("bronze.raw_ais_messages")
         
-        # Static reports (Type 5 - highest quality dimension data)
         static_df = (
             ais_table
             .filter(col("Message.ShipStaticData").isNotNull())
@@ -116,7 +93,6 @@ with PipelineLogger(spark, layer="Bronze-to-Silver (dim_vessel)", parameter="mer
             .filter(col("mmsi").isNotNull() & (col("mmsi") > 0))
         )
 
-        # MetaData fallback for vessels without Type 5 yet
         meta_df = (
             ais_table
             .filter(col("MetaData.MMSI").isNotNull() & (col("MetaData.MMSI") > 0))
@@ -137,10 +113,6 @@ with PipelineLogger(spark, layer="Bronze-to-Silver (dim_vessel)", parameter="mer
         
         ais_vessels_df = static_df.unionByName(meta_df)
 
-    # -------------------------------------------------------------
-    # 3. Combine and Deduplicate (Keep most recent non-null records)
-    # -------------------------------------------------------------
-    combined_df = None
     if noaa_vessels_df is not None and ais_vessels_df is not None:
         combined_df = noaa_vessels_df.unionByName(ais_vessels_df)
     elif noaa_vessels_df is not None:
@@ -148,10 +120,8 @@ with PipelineLogger(spark, layer="Bronze-to-Silver (dim_vessel)", parameter="mer
     elif ais_vessels_df is not None:
         combined_df = ais_vessels_df
     else:
-        print("[WARN] No Bronze tables found. Nothing to MERGE into dim_vessel.")
         combined_df = spark.createDataFrame([], schema=spark.table("silver.dim_vessel").schema)
 
-    # Deduplicate on mmsi picking latest load_timestamp
     window_spec = Window.partitionBy("mmsi").orderBy(col("load_timestamp").desc())
     deduped_vessels = (
         combined_df
@@ -162,46 +132,36 @@ with PipelineLogger(spark, layer="Bronze-to-Silver (dim_vessel)", parameter="mer
         .withColumn("load_timestamp", current_timestamp())
     )
 
-    # -------------------------------------------------------------
-    # 4. Idempotent MERGE INTO silver.dim_vessel
-    # -------------------------------------------------------------
     target_table = DeltaTable.forName(spark, "silver.dim_vessel")
 
-    merge_result = (
-        target_table.alias("target")
-        .merge(
-            deduped_vessels.alias("source"),
-            "target.mmsi = source.mmsi"
-        )
-        .whenMatchedUpdate(
-            condition="""
-                target.vessel_name <=> source.vessel_name = false OR
-                target.destination <=> source.destination = false OR
-                target.draught <=> source.draught = false OR
-                target.eta <=> source.eta = false OR
-                target.imo IS NULL AND source.imo IS NOT NULL
-            """,
-            set={
-                "imo": coalesce(col("source.imo"), col("target.imo")),
-                "vessel_name": coalesce(col("source.vessel_name"), col("target.vessel_name")),
-                "call_sign": coalesce(col("source.call_sign"), col("target.call_sign")),
-                "vessel_type": coalesce(col("source.vessel_type"), col("target.vessel_type")),
-                "length": coalesce(col("source.length"), col("target.length")),
-                "width": coalesce(col("source.width"), col("target.width")),
-                "draught": coalesce(col("source.draught"), col("target.draught")),
-                "destination": coalesce(col("source.destination"), col("target.destination")),
-                "eta": coalesce(col("source.eta"), col("target.eta")),
-                "load_timestamp": col("source.load_timestamp"),
-            }
-        )
-        .whenNotMatchedInsertAll()
-        .execute()
-    )
+    target_table.alias("target").merge(
+        deduped_vessels.alias("source"),
+        "target.mmsi = source.mmsi"
+    ).whenMatchedUpdate(
+        condition="""
+            target.vessel_name <=> source.vessel_name = false OR
+            target.destination <=> source.destination = false OR
+            target.draught <=> source.draught = false OR
+            target.eta <=> source.eta = false OR
+            target.imo IS NULL AND source.imo IS NOT NULL
+        """,
+        set={
+            "imo": coalesce(col("source.imo"), col("target.imo")),
+            "vessel_name": coalesce(col("source.vessel_name"), col("target.vessel_name")),
+            "call_sign": coalesce(col("source.call_sign"), col("target.call_sign")),
+            "vessel_type": coalesce(col("source.vessel_type"), col("target.vessel_type")),
+            "length": coalesce(col("source.length"), col("target.length")),
+            "width": coalesce(col("source.width"), col("target.width")),
+            "draught": coalesce(col("source.draught"), col("target.draught")),
+            "destination": coalesce(col("source.destination"), col("target.destination")),
+            "eta": coalesce(col("source.eta"), col("target.eta")),
+            "load_timestamp": col("source.load_timestamp"),
+        }
+    ).whenNotMatchedInsertAll().execute()
 
-    # In Delta Lake, history records num_inserted and num_updated
     history = target_table.history(1).select("operationMetrics").collect()[0][0]
     inserted = int(history.get("numTargetRowsInserted", 0))
     updated = int(history.get("numTargetRowsUpdated", 0))
 
     logger.set_metrics(rows_inserted=inserted, rows_updated=updated)
-    print(f"[SUCCESS] MERGE completed on silver.dim_vessel: {inserted} inserted, {updated} updated")
+    print(f"MERGE completed on silver.dim_vessel: {inserted} inserted, {updated} updated")
