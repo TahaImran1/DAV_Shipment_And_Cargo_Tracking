@@ -25,15 +25,15 @@ except NameError:
 
 if dbutils is not None:
     try:
-        dbutils.widgets.text("source_path", "/FileStore/tables/WPI.csv", "Source WPI Path")
+        dbutils.widgets.text("source_path", "/Volumes/workspace/bronze/raw_data/WPI.csv", "Source WPI Path")
         dbutils.widgets.text("batch_id", "wpi-reference-v1", "Batch Identifier")
         source_path = dbutils.widgets.get("source_path")
         batch_id = dbutils.widgets.get("batch_id")
     except Exception:
-        source_path = "data/samples/wpi/WPI.csv"
+        source_path = "/Volumes/workspace/bronze/raw_data/WPI.csv"
         batch_id = "wpi-reference-v1"
 else:
-    source_path = "data/samples/wpi/WPI.csv"
+    source_path = "/Volumes/workspace/bronze/raw_data/WPI.csv"
     batch_id = "wpi-reference-v1"
 
 schema = StructType([

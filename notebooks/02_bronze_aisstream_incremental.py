@@ -28,15 +28,15 @@ except NameError:
 
 if dbutils is not None:
     try:
-        dbutils.widgets.text("batch_file", "/FileStore/tables/incremental_load/", "Source Batch File or Directory")
+        dbutils.widgets.text("batch_file", "/Volumes/workspace/bronze/raw_data/ais_daily_20261003.json", "Source Batch File or Directory")
         dbutils.widgets.text("batch_id", "incremental-auto", "Batch Identifier")
         batch_file = dbutils.widgets.get("batch_file")
         batch_id = dbutils.widgets.get("batch_id")
     except Exception:
-        batch_file = "data/samples/incremental_load/"
+        batch_file = "/Volumes/workspace/bronze/raw_data/ais_daily_20261003.json"
         batch_id = "incremental-auto"
 else:
-    batch_file = "data/samples/incremental_load/"
+    batch_file = "/Volumes/workspace/bronze/raw_data/ais_daily_20261003.json"
     batch_id = "incremental-auto"
 
 dimension_schema = StructType([

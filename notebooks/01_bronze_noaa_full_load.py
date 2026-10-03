@@ -26,15 +26,15 @@ except NameError:
 
 if dbutils is not None:
     try:
-        dbutils.widgets.text("source_path", "/FileStore/tables/AIS_Full_Load.csv", "Source File Path")
+        dbutils.widgets.text("source_path", "/Volumes/workspace/bronze/raw_data/AIS_Full_Load.csv", "Source File Path")
         dbutils.widgets.text("batch_id", "2024-01-full-load", "Batch Identifier")
         source_path = dbutils.widgets.get("source_path")
         batch_id = dbutils.widgets.get("batch_id")
     except Exception:
-        source_path = "/FileStore/tables/AIS_Full_Load.csv"
+        source_path = "/Volumes/workspace/bronze/raw_data/AIS_Full_Load.csv"
         batch_id = "2024-01-full-load"
 else:
-    source_path = "/FileStore/tables/AIS_Full_Load.csv"
+    source_path = "/Volumes/workspace/bronze/raw_data/AIS_Full_Load.csv"
     batch_id = "2024-01-full-load"
 
 schema = StructType([
