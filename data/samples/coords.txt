@@ -1,0 +1,18 @@
+NOAA / MarineCadastre Full Load:
+Source: MarineCadastre.gov AccessAIS
+Region: Houston area (Galveston Bay entrance channel)
+Bounding box (min_lon, min_lat, max_lon, max_lat): [-94.702, 29.201, -94.536, 29.351]
+Time window: 2025-08-31 to 2025-12-30 (4 months)
+Real size: ~218 MB
+File: AIS_Full_Load.csv
+
+AISStream Live Collector:
+Region: Houston area (Galveston Bay entrance channel) — 100% matched to NOAA full load
+Bounding box (AISStream format [[max_lat, min_lon], [min_lat, max_lon]]):
+[[29.351, -94.702], [29.201, -94.536]]
+Corresponds to: [-94.702, 29.201, -94.536, 29.351]
+Message Types: PositionReport, ShipStaticData, StaticDataReport
+Output: Appends to data/samples/incremental_load/ais_daily_YYYYMMDD.json
+Note: API key is loaded securely from .env (AISSTREAM_API_KEY)
+
+
