@@ -25,17 +25,18 @@ if not API_KEY:
     print("ERROR: AISSTREAM_API_KEY not set in .env", file=sys.stderr)
     sys.exit(1)
 
-# Houston / Galveston Bay entrance channel — exact match to NOAA MarineCadastre bounding box
+# Galveston Entrance & Anchorage (Bolivar Roads & Port of Galveston approaches)
+# Extends NOAA box by ~5 miles west to include anchored vessels and harbor wharves
+# Target data volume: ~3 to 5 MB per day (meets >= 1 MB requirement without exceeding 5 MB)
 # Format required by AISStream: [[max_lat, min_lon], [min_lat, max_lon]]
-# Corresponds to NOAA box (min_lon, min_lat, max_lon, max_lat): [-94.702, 29.201, -94.536, 29.351]
 BOUNDING_BOX = [
     [
-        float(os.getenv("AIS_MAX_LAT", "29.351")),
-        float(os.getenv("AIS_MIN_LON", "-94.702")),
+        float(os.getenv("AIS_MAX_LAT", "29.400")),
+        float(os.getenv("AIS_MIN_LON", "-94.820")),
     ],
     [
-        float(os.getenv("AIS_MIN_LAT", "29.201")),
-        float(os.getenv("AIS_MAX_LON", "-94.536")),
+        float(os.getenv("AIS_MIN_LAT", "29.200")),
+        float(os.getenv("AIS_MAX_LON", "-94.500")),
     ],
 ]
 
