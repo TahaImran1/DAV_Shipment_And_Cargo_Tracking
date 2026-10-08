@@ -8,13 +8,40 @@ except NameError:
     pass
 
 from pyspark.sql import functions as F
+from pyspark.sql.types import StructType, StructField, StringType
 from audit_logger import PipelineLogger
 
-SOURCE = "/Volumes/workspace/bronze/raw_data/AIS_Full_Load.csv"
+try:
+    dbutils.widgets.text("source_path", "/Volumes/workspace/bronze/raw_data/AIS_Full_Load.csv", "Source Path")
+    dbutils.widgets.text("batch_id", datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"), "Batch ID")
+    SOURCE = dbutils.widgets.get("source_path")
+    batch_id = dbutils.widgets.get("batch_id")
+except Exception:
+    SOURCE = "/Volumes/workspace/bronze/raw_data/AIS_Full_Load.csv"
+    batch_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
 TARGET = "workspace.bronze.raw_noaa_ais"
 QUARANTINE = "workspace.bronze.quarantine"
 
-batch_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+NOAA_SCHEMA = StructType([
+    StructField("MMSI", StringType(), True),
+    StructField("BaseDateTime", StringType(), True),
+    StructField("LAT", StringType(), True),
+    StructField("LON", StringType(), True),
+    StructField("SOG", StringType(), True),
+    StructField("COG", StringType(), True),
+    StructField("Heading", StringType(), True),
+    StructField("VesselName", StringType(), True),
+    StructField("IMO", StringType(), True),
+    StructField("CallSign", StringType(), True),
+    StructField("VesselType", StringType(), True),
+    StructField("Status", StringType(), True),
+    StructField("Length", StringType(), True),
+    StructField("Width", StringType(), True),
+    StructField("Draft", StringType(), True),
+    StructField("Cargo", StringType(), True),
+    StructField("TransceiverClass", StringType(), True),
+])
 
 
 def quarantine(df, source, reason):
@@ -32,8 +59,12 @@ def quarantine(df, source, reason):
 
 
 with PipelineLogger(spark, layer="bronze", parameter="noaa_full_load") as logger:
-    # everything stays a string in bronze, typing happens in silver
-    raw = spark.read.option("header", True).csv(SOURCE)
+    raw = (
+        spark.read
+        .option("header", True)
+        .schema(NOAA_SCHEMA)
+        .csv(SOURCE)
+    )
     raw = raw.toDF(*[c.replace("\ufeff", "").strip() for c in raw.columns])
 
     is_bad = F.col("MMSI").isNull() | F.col("BaseDateTime").isNull()
@@ -43,6 +74,7 @@ with PipelineLogger(spark, layer="bronze", parameter="noaa_full_load") as logger
         .withColumn("source", F.lit("noaa"))
         .withColumn("batch_id", F.lit(batch_id))
         .withColumn("ingestion_timestamp", F.current_timestamp())
+        .withColumn("load_timestamp", F.current_timestamp())
     )
 
     bad = raw.filter(is_bad).withColumn("raw_payload", F.to_json(F.struct(*raw.columns)))

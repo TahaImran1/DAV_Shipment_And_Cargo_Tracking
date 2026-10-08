@@ -8,20 +8,27 @@ except NameError:
     pass
 
 from pyspark.sql import functions as F
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType
 from audit_logger import PipelineLogger
 
-SOURCE = "/Volumes/workspace/bronze/raw_data/WPI.csv"
+try:
+    dbutils.widgets.text("source_path", "/Volumes/workspace/bronze/raw_data/WPI.csv", "Source Path")
+    dbutils.widgets.text("batch_id", "wpi-reference-v1", "Batch ID")
+    SOURCE = dbutils.widgets.get("source_path")
+    batch_id = dbutils.widgets.get("batch_id")
+except Exception:
+    SOURCE = "/Volumes/workspace/bronze/raw_data/WPI.csv"
+    batch_id = "wpi-reference-v1"
+
 TARGET = "workspace.bronze.raw_wpi_ports"
 
 
 def clean_name(name):
-    # the file starts with a BOM, so the first header comes through as "\ufeffportNumber"
     name = name.replace("\ufeff", "").strip()
     return re.sub(r"[ ,;{}()\n\t=]+", "_", name)
 
 
 with PipelineLogger(spark, layer="bronze", parameter="wpi_reference") as logger:
-    # escape='"' matters here: DMS values like "30°20'00""N" contain doubled quotes
     raw = (
         spark.read
         .option("header", True)
@@ -31,7 +38,13 @@ with PipelineLogger(spark, layer="bronze", parameter="wpi_reference") as logger:
     )
 
     df = raw.toDF(*[clean_name(c) for c in raw.columns])
-    df = df.withColumn("portNumber", F.col("portNumber").cast("int"))
+    df = (
+        df.withColumn("portNumber", F.col("portNumber").cast("int"))
+        .withColumn("source", F.lit("wpi"))
+        .withColumn("batch_id", F.lit(batch_id))
+        .withColumn("ingestion_timestamp", F.current_timestamp())
+        .withColumn("load_timestamp", F.current_timestamp())
+    )
 
     missing = df.filter(F.col("portNumber").isNull()).count()
     if missing:

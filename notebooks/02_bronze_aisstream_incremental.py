@@ -10,11 +10,17 @@ except NameError:
 from pyspark.sql import functions as F
 from audit_logger import PipelineLogger
 
-SOURCE = "/Volumes/workspace/bronze/raw_data/ais_daily_20261003.json"
+try:
+    dbutils.widgets.text("source_path", "/Volumes/workspace/bronze/raw_data/ais_daily_20261003.json", "Source Path")
+    dbutils.widgets.text("batch_id", datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"), "Batch ID")
+    SOURCE = dbutils.widgets.get("source_path")
+    batch_id = dbutils.widgets.get("batch_id")
+except Exception:
+    SOURCE = "/Volumes/workspace/bronze/raw_data/ais_daily_20261003.json"
+    batch_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
 TARGET = "workspace.bronze.raw_aisstream_incremental"
 QUARANTINE = "workspace.bronze.quarantine"
-
-batch_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
 def j(path):
@@ -33,7 +39,6 @@ def static(field):
 
 
 with PipelineLogger(spark, layer="bronze", parameter="aisstream_incremental") as logger:
-    # one JSON message per line; get_json_object returns null on bad lines instead of failing
     lines = spark.read.text(SOURCE)
 
     parsed = lines.select(
@@ -75,6 +80,7 @@ with PipelineLogger(spark, layer="bronze", parameter="aisstream_incremental") as
         .withColumn("source", F.lit("aisstream"))
         .withColumn("batch_id", F.lit(batch_id))
         .withColumn("ingestion_timestamp", F.current_timestamp())
+        .withColumn("load_timestamp", F.current_timestamp())
     )
 
     good.write.format("delta").mode("append").saveAsTable(TARGET)
