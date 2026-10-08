@@ -1,210 +1,112 @@
-# Maritime Shipment & Cargo Tracking Pipeline (Lakehouse on Databricks)
+# Maritime Shipment & Cargo Tracking Lakehouse
 
-An end-to-end Medallion Lakehouse data pipeline built on Databricks that ingests, cleans, models, and analyzes Automatic Identification System (AIS) vessel tracking data alongside global port reference data.
+[![Platform](https://img.shields.io/badge/Platform-Databricks%20Serverless-FF3621?logo=databricks&logoColor=white)](https://databricks.com)
+[![Engine](https://img.shields.io/badge/Engine-Apache%20Spark%204.x-E25A1C?logo=apachespark&logoColor=white)](https://spark.apache.org)
+[![Storage](https://img.shields.io/badge/Format-Delta%20Lake-00ADD8?logo=delta&logoColor=white)](https://delta.io)
+[![Catalog](https://img.shields.io/badge/Governance-Unity%20Catalog-0078D4)](https://docs.databricks.com/data-governance/unity-catalog/index.html)
+
+An end-to-end Medallion Lakehouse pipeline on Databricks ingesting, modeling, and analyzing high-frequency Automatic Identification System (AIS) vessel telemetry and global port infrastructure data.
 
 ---
 
-## 1. System Architecture
+## 1. Architecture Overview
 
-```
-                  ┌────────────────────────────────────────┐
-                  │              DATA SOURCES              │
-                  └───────────────────┬────────────────────┘
-                                      │
-          ┌───────────────────────────┼───────────────────────────┐
-          │                           │                           │
-          ▼                           ▼                           ▼
-┌──────────────────┐        ┌──────────────────┐        ┌──────────────────┐
-│ NOAA AIS (CSV)   │        │ AISStream (JSON) │        │ NGA WPI (CSV)    │
-│ Full Load        │        │ Incremental Feed │        │ World Port Index │
-│ ~218 MB          │        │ Live WebSocket   │        │ ~1.3 MB          │
-└─────────┬────────┘        └─────────┬────────┘        └─────────┬────────┘
-          │                           │                           │
-          └───────────────────────────┼───────────────────────────┘
-                                      ▼
-                        ┌───────────────────────────┐
-                        │       BRONZE LAYER        │
-                        │ • Strict StructType Schema│
-                        │ • Non-conforming ->       │
-                        │   bronze.quarantine       │
-                        │ • mergeSchema=True        │
-                        └─────────────┬─────────────┘
-                                      │
-                                      ▼
-                        ┌───────────────────────────┐
-                        │       SILVER LAYER        │
-                        │ (Star Schema Fact & Dims) │
-                        │ • Deduplication & Cleaning│
-                        │ • MERGE INTO (Idempotent) │
-                        │   - dim_vessel (mmsi)     │
-                        │   - dim_port (port_code)  │
-                        │   - fact_vessel_position  │
-                        │     (mmsi, timestamp)     │
-                        │   - dim_voyage (voyage_id)│
-                        └─────────────┬─────────────┘
-                                      │
-                                      ▼
-                        ┌───────────────────────────┐
-                        │        GOLD LAYER         │
-                        │ (Business Aggregations)   │
-                        │ • gold_vessel_activity    │
-                        │ • gold_port_performance   │
-                        │ • gold_route_performance  │
-                        │ • gold_daily_activity     │
-                        └─────────────┬─────────────┘
-                                      │
-                                      ▼
-                        ┌───────────────────────────┐
-                        │   POWER BI DASHBOARDS     │
-                        │ 1. Vessel Operations      │
-                        │ 2. Port & Route Analytics │
-                        │ 3. Traffic Overview       │
-                        └───────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph Ingestion["Raw Sources"]
+        N["NOAA AIS (CSV)\nFull Load: 2.0M rows"]
+        A["AISStream (JSON)\nLive WebSocket: 1.8K rows"]
+        W["NGA WPI (CSV)\nReference: 2.9K rows"]
+    end
+
+    subgraph Bronze["Bronze (Append-Only)"]
+        BN["bronze.raw_noaa_ais"]
+        BA["bronze.raw_aisstream_incremental"]
+        BW["bronze.raw_wpi_ports"]
+        BQ["bronze.quarantine"]
+    end
+
+    subgraph Silver["Silver (Star Schema)"]
+        DV["dim_vessel\n(SCD-1, 2.3K rows)"]
+        DP["dim_port\n(WPI, 2.9K rows)"]
+        FP["fact_vessel_position\n(1.98M facts)"]
+        DY["dim_voyage\n(10.3K voyages)"]
+    end
+
+    subgraph Gold["Gold (Analytics Marts)"]
+        GC["port_congestion_daily"]
+        GA["daily_vessel_activity"]
+        GE["vessel_emissions_proxy"]
+    end
+
+    N --> BN
+    A --> BA
+    W --> BW
+    BN & BA --> DV & FP
+    BW --> DP
+    FP --> DY
+    FP & DP --> GC
+    FP & DV --> GA & GE
 ```
 
 ---
 
-## 2. Lakehouse Medallion Data Models
+## 2. Lakehouse Data Model
 
-### 2.1 Bronze Tables (Raw + Metadata)
-All Bronze tables include strict schema validation (`inferSchema` is strictly forbidden), plus standard metadata columns:
-- `source` (STRING: `'noaa'`, `'aisstream'`, `'wpi'`)
-- `ingestion_timestamp` (TIMESTAMP)
-- `batch_id` (STRING)
-- `load_timestamp` (TIMESTAMP)
+### Silver Star Schema
 
-| Table | Description | Partitioning |
+| Table | Type | Primary Key | Key Attributes | Rows |
+| :--- | :--- | :--- | :--- | :--- |
+| `silver.dim_vessel` | Dimension | `mmsi` | `vessel_name`, `imo`, `call_sign`, `vessel_type`, `length`, `width`, `draft` | 2,320 |
+| `silver.dim_port` | Dimension | `port_code` | `port_number`, `port_name`, `country`, `latitude`, `longitude`, `harbor_size` | 2,938 |
+| `silver.fact_vessel_position` | Fact | `(mmsi, timestamp)` | `latitude`, `longitude`, `sog`, `cog`, `heading`, `status`, `source` | 1,979,953 |
+| `silver.dim_voyage` | Dimension | `voyage_id` | `mmsi`, `departure_time`, `arrival_time`, `arrival_port_code`, `position_count` | 10,305 |
+
+*All Silver writes use idempotent `MERGE INTO` (zero duplication on re-execution).*
+
+### Gold Business Marts
+
+| Table | Grain | Key Metrics |
 | :--- | :--- | :--- |
-| `bronze.raw_noaa_ais` | Historical vessel positions from NOAA MarineCadastre | Append |
-| `bronze.raw_ais_messages` | Live AIS position reports & ShipStaticData from AISStream | Append |
-| `bronze.raw_wpi_ports` | Global port directory from NGA Pub 150 | Append |
-| `bronze.quarantine` | Corrupted rows and schema drift violations | Append |
-
-### 2.2 Silver Layer (Star Schema — Fact & Dimensions)
-All Silver tables are populated using **idempotent `MERGE INTO`** (zero duplicate records upon repeated executions).
-
-#### `silver.dim_vessel`
-*Vessel dimension capturing static attributes, dimensions, and live voyage voyage data updates (AIS Type 5).*
-- **Primary Key:** `mmsi` (BIGINT)
-- **Columns:**
-  - `mmsi` (BIGINT, PK) — Maritime Mobile Service Identity
-  - `imo` (BIGINT) — International Maritime Organization identifier
-  - `vessel_name` (STRING) — Normalized ship name
-  - `call_sign` (STRING) — Radio call sign
-  - `vessel_type` (INT) — Vessel category code (e.g. Tanker, Cargo, Tug)
-  - `length` (DOUBLE) — Vessel overall length (meters)
-  - `width` (DOUBLE) — Vessel beam (meters)
-  - `draught` (DOUBLE) — Current static draught (meters)
-  - `destination` (STRING) — Reported destination
-  - `eta` (STRING) — Estimated time of arrival
-  - `load_timestamp` (TIMESTAMP) — Time of latest update
-
-#### `silver.dim_port`
-*Port dimension loaded from the NGA World Port Index with converted decimal coordinates.*
-- **Primary Key:** `port_code` (STRING, e.g. `US HOU`, `US GLS`)
-- **Columns:**
-  - `port_code` (STRING, PK) — UN/LOCODE or WPI unique identifier
-  - `port_number` (INT) — WPI Index number
-  - `port_name` (STRING) — Official port name
-  - `country` (STRING) — Country name
-  - `country_code` (STRING) — ISO country code
-  - `latitude` (DOUBLE) — Latitude in decimal degrees
-  - `longitude` (DOUBLE) — Longitude in decimal degrees
-  - `harbor_size` (STRING) — Port size classification (L, M, S, V)
-  - `harbor_type` (STRING) — Coastal, river, or breakwater type
-  - `load_timestamp` (TIMESTAMP)
-
-#### `silver.fact_vessel_position`
-*Central positional fact table capturing validated high-frequency vessel movements.*
-- **Composite Primary Key:** `(mmsi, timestamp)`
-- **Partitioned By:** `source`
-- **Columns:**
-  - `position_id` (STRING, UUID)
-  - `mmsi` (BIGINT, FK -> dim_vessel)
-  - `timestamp` (TIMESTAMP)
-  - `latitude` (DOUBLE) — Cleaned: `[-90.0, 90.0]`
-  - `longitude` (DOUBLE) — Cleaned: `[-180.0, 180.0]`
-  - `sog` (DOUBLE) — Speed Over Ground in knots (`[0.0, 102.2]`)
-  - `cog` (DOUBLE) — Course Over Ground in degrees (`[0.0, 360.0]`)
-  - `heading` (DOUBLE) — True heading in degrees
-  - `nav_status` (INT) — Underway, at anchor, moored, etc.
-  - `source` (STRING) — `'noaa'` or `'aisstream'`
-  - `batch_id` (STRING)
-  - `load_timestamp` (TIMESTAMP)
-
-#### `silver.dim_voyage`
-*Derived voyage sequences based on temporal gaps (> 4 hours).*
-- **Primary Key:** `voyage_id` (STRING: `<mmsi>-<seq>`)
-- **Columns:** `voyage_id`, `mmsi`, `departure_port`, `arrival_port`, `start_ts`, `end_ts`, `total_points`, `avg_sog`, `max_sog`, `load_timestamp`
-
-### 2.3 Gold Layer (Business Aggregations Only)
-Built on top of the Silver star schema to feed Power BI dashboards:
-1. `gold.gold_vessel_activity`: Distance travelled, active days, average/max speeds per vessel.
-2. `gold.gold_port_performance`: Port visits, unique vessel traffic, average speeds per port/day.
-3. `gold.gold_route_performance`: Transit times and delays per corridor.
-4. `gold.gold_daily_maritime_activity`: Daily regional density and vessel traffic volume.
-
-### 2.4 Observability (`maritime_ops.pipeline_execution_logs`)
-Every pipeline step records execution metrics:
-- `log_id` (STRING UUID)
-- `layer` (STRING, e.g. `'Raw-to-Bronze (NOAA)'`, `'Bronze-to-Silver (dim_vessel)'`)
-- `parameter` (STRING, e.g. batch file path or date)
-- `start_time` / `end_time` (TIMESTAMP)
-- `status` (`'Success'` or `'Failure'`)
-- `rows_inserted` / `rows_updated` (BIGINT)
-- `error_message` (STRING)
+| `gold.port_congestion_daily` | Port × Date | Vessels in port, dwell time proxy |
+| `gold.daily_vessel_activity` | MMSI × Date | `total_distance_km`, `avg_speed_knots`, `operating_hours` |
+| `gold.vessel_emissions_proxy` | MMSI × Date | Fuel burn proxy (tonnes, Admiralty cube law), `co2_proxy_tonnes` |
 
 ---
 
-## 3. Notebook Execution Guide
+## 3. Pipeline Execution Guide
 
-The pipeline notebooks are located in `notebooks/`:
+Run the notebooks sequentially in Databricks:
 
 ```
 notebooks/
-├── 00_setup_schemas.py                 # Initializes bronze, silver, gold, maritime_ops & quarantine
-├── 01_bronze_noaa_full_load.py         # Full load ingestion (parameterised)
-├── 02_bronze_aisstream_incremental.py  # Incremental live JSON ingestion (parameterised)
-├── 03_bronze_wpi_reference.py          # Reference port data ingestion (parameterised)
-├── 04_silver_dim_vessel.py             # Upsert dim_vessel via MERGE (Type 1 & 5)
-├── 05_silver_dim_port.py               # Upsert dim_port via MERGE
-├── 06_silver_fact_position.py          # Upsert fact_vessel_position via MERGE on (mmsi, ts)
-├── 07_silver_dim_voyage.py             # Derive voyage dimension from positional facts
-├── 08_gold_aggregations.py             # Build all 4 Gold summary tables
-└── 99_audit_logger.py                  # Shared logging utility
+├── 00_setup_schemas.py              # Creates bronze, silver, gold, maritime_ops & quarantine
+├── 03_bronze_wpi_reference.py       # Ingests WPI port reference data into bronze
+├── 05_silver_dim_port.py            # Converts DMS coords, parses port codes, merges dim_port
+├── 01_bronze_noaa_full_load.py      # Ingests NOAA AIS CSV baseline (2.0M records)
+├── 02_bronze_aisstream_incremental.py  # Ingests daily live AIS WebSocket JSON feed
+├── 04_silver_dim_vessel.py          # Windowed deduplication & merge into dim_vessel
+├── 06_silver_fact_position.py       # Validates coordinates & merges into fact_vessel_position
+├── 07_silver_dim_voyage.py          # Haversine distance & windowed voyage segmentation
+└── 08_gold_aggregations.py          # Refreshes all 3 Gold summary aggregation tables
 ```
 
-### Parameter Usage & Backfills
-
-Each ingestion notebook uses **Databricks Widgets** so it can be parameterized via UI or automated Databricks Workflows/Jobs:
-
-#### 1. Full Load Execution
-Open `01_bronze_noaa_full_load` in Databricks and specify:
-- `source_path`: Path to full load CSV (e.g. `/FileStore/tables/AIS_Full_Load.csv`)
-- `batch_id`: `2024-01-full-load`
-
-#### 2. Incremental Daily Execution
-Open `02_bronze_aisstream_incremental` and specify:
-- `batch_file`: Path to daily JSON Lines file (e.g. `/FileStore/tables/incremental_load/ais_daily_20261003.json`)
-- `batch_id`: `incremental-20261003`
-
-#### 3. Backfill Execution
-To reprocess an earlier historical batch or date:
-Pass the historical file path and batch ID to `01_bronze_noaa_full_load` or `02_bronze_aisstream_incremental`. Because Silver writes use `MERGE INTO`, **re-running on historical batches is completely idempotent** and produces zero duplicate rows.
+### Raw Data Volumes
+Place input files in `/Volumes/workspace/bronze/raw_data/`:
+- `WPI.csv` — Global port directory
+- `AIS_Full_Load.csv` — NOAA MarineCadastre baseline (Gulf of Mexico)
+- `ais_daily_YYYYMMDD.json` — Generated by local collector (`src/collector/aisstream_collector.py`)
 
 ---
 
-## 4. Local AISStream Collector
+## 4. Engineering Standards & Observability
 
-The collector runs locally on your machine outside Databricks and writes clean daily JSON Lines files:
-
-```bash
-# Run foreground
-python src/collector/aisstream_collector.py
-
-# Or run in background for 24-hour collection:
-nohup python src/collector/aisstream_collector.py > collector.log 2>&1 &
-```
-
-- Bounding box: Galveston Bay / Houston entrance corridor `[[29.351, -94.702], [29.201, -94.536]]` (exact match to NOAA full load).
-- Output: `data/samples/incremental_load/ais_daily_YYYYMMDD.json`.
+- **Zero Schema Inference**: All ingestion enforces explicit Spark typing; corrupt lines route to `bronze.quarantine`.
+- **Audit Logging**: Every stage records metrics via `PipelineLogger` to `workspace.maritime_ops.pipeline_execution_logs`:
+  ```sql
+  SELECT layer, parameter, status, rows_inserted, rows_updated,
+         ROUND(UNIX_TIMESTAMP(end_time) - UNIX_TIMESTAMP(start_time), 2) AS duration_seconds
+  FROM workspace.maritime_ops.pipeline_execution_logs
+  ORDER BY start_time DESC;
+  ```
+- **FinOps Optimization**: Bounding-box filtering (`29.20N to 29.35N, -94.70W to -94.54W`) scopes volume to Galveston/Houston transit corridor, ensuring sub-second aggregations on Serverless compute.
