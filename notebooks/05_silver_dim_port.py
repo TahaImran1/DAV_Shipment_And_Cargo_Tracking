@@ -48,23 +48,22 @@ spark.sql("""
 """)
 
 @udf(returnType=DoubleType())
-def dms_to_decimal(dms_str):
-    if not dms_str:
+def dms_to_decimal(s):
+    if not s:
         return None
-    try:
-        clean = dms_str.strip().replace('"', '').replace("'", "")
-        m = re.match(r"(\d+)[°\s]+(\d+)?(?:[\'\s]+(\d+))?\s*([NSEWnsew])?", clean)
-        if not m:
-            return float(clean)
+    s = str(s).strip()
+    m = re.match(r'^(-?\d+(?:\.\d+)?)\s*°?\s*(\d+(?:\.\d+)?)?[\'′]?\s*(\d+(?:\.\d+)?)?[\"″]?\s*([NSEWnsew])?$', s)
+    if m:
         deg = float(m.group(1))
         minute = float(m.group(2) or 0)
         sec = float(m.group(3) or 0)
-        direction = (m.group(4) or 'N').upper()
-        
-        dec = deg + (minute / 60.0) + (sec / 3600.0)
-        if direction in ['S', 'W']:
+        direction = (m.group(4) or '').upper()
+        dec = abs(deg) + (minute / 60.0) + (sec / 3600.0)
+        if deg < 0 or direction in ('S', 'W'):
             dec = -dec
         return round(dec, 6)
+    try:
+        return float(s)
     except Exception:
         return None
 
@@ -73,6 +72,24 @@ with PipelineLogger(spark, layer="Bronze-to-Silver (dim_port)", parameter="wpi-r
         raise RuntimeError("Table bronze.raw_wpi_ports not found. Run 03_bronze_wpi_reference first.")
 
     raw_wpi = spark.table("bronze.raw_wpi_ports")
+
+    if raw_wpi.filter(col("portNumber").isNotNull()).count() == 0:
+        source_path = "/Volumes/workspace/bronze/raw_data/WPI.csv"
+        raw_df = spark.read.format("csv").option("header", "true").load(source_path)
+        for c in raw_df.columns:
+            clean_c = c.replace("\ufeff", "").strip()
+            if clean_c != c:
+                raw_df = raw_df.withColumnRenamed(c, clean_c)
+        valid_df = (
+            raw_df
+            .withColumn("portNumber", col("portNumber").cast("int"))
+            .withColumn("source", lit("wpi"))
+            .withColumn("ingestion_timestamp", current_timestamp())
+            .withColumn("batch_id", lit("wpi-reference-v1"))
+            .withColumn("load_timestamp", current_timestamp())
+        )
+        valid_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable("bronze.raw_wpi_ports")
+        raw_wpi = spark.table("bronze.raw_wpi_ports")
 
     cleaned_ports = (
         raw_wpi

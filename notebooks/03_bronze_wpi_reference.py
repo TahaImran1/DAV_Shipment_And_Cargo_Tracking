@@ -143,32 +143,17 @@ with PipelineLogger(spark, layer="Raw-to-Bronze (WPI)", parameter=batch_id) as l
     raw_df = (
         spark.read.format("csv")
         .option("header", "true")
-        .option("mode", "PERMISSIVE")
-        .option("columnNameOfCorruptRecord", "_corrupt_record")
-        .schema(schema)
         .load(source_path)
     )
 
-    corrupt_df = raw_df.filter(col("_corrupt_record").isNotNull())
-    corrupt_count = corrupt_df.count()
-
-    if corrupt_count > 0:
-        quarantine_records = (
-            corrupt_df.select(
-                expr("uuid()").alias("quarantine_id"),
-                lit("wpi").alias("source"),
-                lit(batch_id).alias("batch_id"),
-                col("_corrupt_record").alias("raw_payload"),
-                lit("Malformed WPI CSV record").alias("error_reason"),
-                current_timestamp().alias("quarantine_timestamp"),
-            )
-        )
-        quarantine_records.write.format("delta").mode("append").saveAsTable("bronze.quarantine")
-        print(f"Quarantined {corrupt_count} corrupt records")
+    for c in raw_df.columns:
+        clean_c = c.replace("\ufeff", "").strip()
+        if clean_c != c:
+            raw_df = raw_df.withColumnRenamed(c, clean_c)
 
     valid_df = (
-        raw_df.filter(col("_corrupt_record").isNull())
-        .drop("_corrupt_record")
+        raw_df
+        .withColumn("portNumber", col("portNumber").cast("int"))
         .withColumn("source", lit("wpi"))
         .withColumn("ingestion_timestamp", current_timestamp())
         .withColumn("batch_id", lit(batch_id))
@@ -177,8 +162,8 @@ with PipelineLogger(spark, layer="Raw-to-Bronze (WPI)", parameter=batch_id) as l
 
     (
         valid_df.write.format("delta")
-        .mode("append")
-        .option("mergeSchema", "true")
+        .mode("overwrite")
+        .option("overwriteSchema", "true")
         .saveAsTable("bronze.raw_wpi_ports")
     )
 
