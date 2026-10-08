@@ -27,3 +27,5 @@ spark.sql("""
         error_message STRING
     ) USING DELTA
 """)
+
+print("Schemas and setup tables verified successfully.")

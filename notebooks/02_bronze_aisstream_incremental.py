@@ -79,4 +79,7 @@ with PipelineLogger(spark, layer="bronze", parameter="aisstream_incremental") as
 
     good.write.format("delta").mode("append").saveAsTable(TARGET)
 
-    logger.set_metrics(rows_inserted=spark.table(TARGET).filter(F.col("batch_id") == batch_id).count())
+    inserted = spark.table(TARGET).filter(F.col("batch_id") == batch_id).count()
+    total = spark.table(TARGET).count()
+    logger.set_metrics(rows_inserted=inserted)
+    print(f"Ingested {inserted} incremental AIS records into {TARGET} (batch: {batch_id}, total: {total})")

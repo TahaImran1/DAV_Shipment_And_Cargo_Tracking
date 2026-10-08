@@ -68,3 +68,5 @@ with PipelineLogger(spark, layer="silver", parameter="fact_vessel_position") as 
 
     inserted, updated = merge_into(positions, TARGET, ["mmsi", "timestamp"])
     logger.set_metrics(rows_inserted=inserted, rows_updated=updated)
+    total = spark.table(TARGET).count()
+    print(f"MERGE completed on {TARGET}: {inserted} inserted, {updated} updated (total: {total})")

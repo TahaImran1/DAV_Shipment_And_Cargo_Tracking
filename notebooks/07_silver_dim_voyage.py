@@ -89,4 +89,6 @@ with PipelineLogger(spark, layer="silver", parameter="dim_voyage") as logger:
         .saveAsTable(TARGET)
     )
 
-    logger.set_metrics(rows_inserted=spark.table(TARGET).count())
+    total = spark.table(TARGET).count()
+    logger.set_metrics(rows_inserted=total)
+    print(f"Derived {total} voyages into {TARGET}")

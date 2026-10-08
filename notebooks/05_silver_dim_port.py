@@ -84,3 +84,5 @@ with PipelineLogger(spark, layer="silver", parameter="dim_port") as logger:
 
     inserted, updated = merge_into(ports, TARGET, ["port_code"])
     logger.set_metrics(rows_inserted=inserted, rows_updated=updated)
+    total = spark.table(TARGET).count()
+    print(f"MERGE completed on {TARGET}: {inserted} inserted, {updated} updated (total: {total})")

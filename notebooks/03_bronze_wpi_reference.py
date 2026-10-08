@@ -45,4 +45,6 @@ with PipelineLogger(spark, layer="bronze", parameter="wpi_reference") as logger:
         .saveAsTable(TARGET)
     )
 
-    logger.set_metrics(rows_inserted=spark.table(TARGET).count())
+    total = spark.table(TARGET).count()
+    logger.set_metrics(rows_inserted=total)
+    print(f"Ingested {total} ports into {TARGET}")

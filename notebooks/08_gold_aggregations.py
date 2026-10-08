@@ -109,8 +109,13 @@ with PipelineLogger(spark, layer="gold", parameter="aggregations") as logger:
         .withColumn("co2_proxy_tonnes", F.round(F.col("fuel_burn_proxy_tonnes") * CO2_PER_TONNE_FUEL, 3))
     )
 
-    total = save(congestion, "workspace.gold.port_congestion_daily")
-    total += save(activity, "workspace.gold.daily_vessel_activity")
-    total += save(emissions, "workspace.gold.vessel_emissions_proxy")
+    c_count = save(congestion, "workspace.gold.port_congestion_daily")
+    a_count = save(activity, "workspace.gold.daily_vessel_activity")
+    e_count = save(emissions, "workspace.gold.vessel_emissions_proxy")
+    total = c_count + a_count + e_count
 
     logger.set_metrics(rows_inserted=total)
+    print("Gold tables refreshed:")
+    print(f"  - port_congestion_daily: {c_count} rows")
+    print(f"  - daily_vessel_activity: {a_count} rows")
+    print(f"  - vessel_emissions_proxy: {e_count} rows")
