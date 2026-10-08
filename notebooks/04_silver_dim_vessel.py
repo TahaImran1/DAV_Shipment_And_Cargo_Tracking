@@ -1,173 +1,80 @@
+import os
+import sys
+
 try:
-    import os, sys
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 except NameError:
     pass
+
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 from audit_logger import PipelineLogger
 
-from delta.tables import DeltaTable
-from pyspark.sql.functions import (
-    col,
-    lit,
-    coalesce,
-    trim,
-    upper,
-    when,
-    current_timestamp,
-    row_number,
-    concat_ws,
-    lpad,
-)
-from pyspark.sql.window import Window
+TARGET = "workspace.silver.dim_vessel"
+COLS = ["vessel_name", "imo", "call_sign", "vessel_type", "length", "width", "draft"]
 
-try:
-    spark
-except NameError:
-    from pyspark.sql import SparkSession
-    spark = SparkSession.builder.getOrCreate()
 
-spark.sql("CREATE SCHEMA IF NOT EXISTS silver")
-spark.sql("""
-    CREATE TABLE IF NOT EXISTS silver.dim_vessel (
-        mmsi BIGINT NOT NULL,
-        imo BIGINT,
-        vessel_name STRING,
-        call_sign STRING,
-        vessel_type INT,
-        length DOUBLE,
-        width DOUBLE,
-        draught DOUBLE,
-        destination STRING,
-        eta STRING,
-        load_timestamp TIMESTAMP NOT NULL
-    )
-    USING DELTA
-    TBLPROPERTIES (
-        'delta.autoOptimize.optimizeWrite' = 'true',
-        'delta.autoOptimize.autoCompact' = 'true'
-    )
-""")
+def text(c):
+    return F.when(F.trim(c) != "", F.trim(c))
 
-with PipelineLogger(spark, layer="Bronze-to-Silver (dim_vessel)", parameter="merge-all-sources") as logger:
-    noaa_vessels_df = None
-    if spark.catalog.tableExists("bronze.raw_noaa_ais"):
-        noaa_vessels_df = (
-            spark.table("bronze.raw_noaa_ais")
-            .filter(col("MMSI").isNotNull() & (col("MMSI") != "") & (col("MMSI") != "0"))
-            .select(
-                col("MMSI").cast("bigint").alias("mmsi"),
-                when(col("IMO").isNotNull() & (col("IMO") != "") & (col("IMO") != "0"), col("IMO").cast("bigint")).otherwise(None).alias("imo"),
-                trim(upper(col("VesselName"))).alias("vessel_name"),
-                trim(upper(col("CallSign"))).alias("call_sign"),
-                col("VesselType").cast("int").alias("vessel_type"),
-                col("Length").cast("double").alias("length"),
-                col("Width").cast("double").alias("width"),
-                col("Draft").cast("double").alias("draught"),
-                lit(None).cast("string").alias("destination"),
-                lit(None).cast("string").alias("eta"),
-                col("load_timestamp"),
-            )
-        )
 
-    ais_vessels_df = None
-    if spark.catalog.tableExists("bronze.raw_ais_messages"):
-        ais_table = spark.table("bronze.raw_ais_messages")
-        
-        static_df = (
-            ais_table
-            .filter(col("Message.ShipStaticData").isNotNull())
-            .select(
-                coalesce(col("Message.ShipStaticData.UserID"), col("MetaData.MMSI")).cast("bigint").alias("mmsi"),
-                when(col("Message.ShipStaticData.ImoNumber") > 0, col("Message.ShipStaticData.ImoNumber")).otherwise(None).alias("imo"),
-                trim(upper(coalesce(col("Message.ShipStaticData.Name"), col("MetaData.ShipName")))).alias("vessel_name"),
-                trim(upper(col("Message.ShipStaticData.CallSign"))).alias("call_sign"),
-                col("Message.ShipStaticData.Type").cast("int").alias("vessel_type"),
-                (col("Message.ShipStaticData.Dimension.A") + col("Message.ShipStaticData.Dimension.B")).cast("double").alias("length"),
-                (col("Message.ShipStaticData.Dimension.C") + col("Message.ShipStaticData.Dimension.D")).cast("double").alias("width"),
-                col("Message.ShipStaticData.MaximumStaticDraught").cast("double").alias("draught"),
-                trim(upper(col("Message.ShipStaticData.Destination"))).alias("destination"),
-                concat_ws("-",
-                    lpad(col("Message.ShipStaticData.Eta.Month").cast("string"), 2, "0"),
-                    lpad(col("Message.ShipStaticData.Eta.Day").cast("string"), 2, "0"),
-                    concat_ws(":",
-                        lpad(col("Message.ShipStaticData.Eta.Hour").cast("string"), 2, "0"),
-                        lpad(col("Message.ShipStaticData.Eta.Minute").cast("string"), 2, "0")
-                    )
-                ).alias("eta"),
-                col("load_timestamp"),
-            )
-            .filter(col("mmsi").isNotNull() & (col("mmsi") > 0))
-        )
+def positive(c):
+    return F.when(c.cast("double") > 0, c.cast("double"))
 
-        meta_df = (
-            ais_table
-            .filter(col("MetaData.MMSI").isNotNull() & (col("MetaData.MMSI") > 0))
-            .select(
-                col("MetaData.MMSI").cast("bigint").alias("mmsi"),
-                lit(None).cast("bigint").alias("imo"),
-                trim(upper(col("MetaData.ShipName"))).alias("vessel_name"),
-                lit(None).cast("string").alias("call_sign"),
-                lit(None).cast("int").alias("vessel_type"),
-                lit(None).cast("double").alias("length"),
-                lit(None).cast("double").alias("width"),
-                lit(None).cast("double").alias("draught"),
-                lit(None).cast("string").alias("destination"),
-                lit(None).cast("string").alias("eta"),
-                col("load_timestamp"),
-            )
-        )
-        
-        ais_vessels_df = static_df.unionByName(meta_df)
 
-    if noaa_vessels_df is not None and ais_vessels_df is not None:
-        combined_df = noaa_vessels_df.unionByName(ais_vessels_df)
-    elif noaa_vessels_df is not None:
-        combined_df = noaa_vessels_df
-    elif ais_vessels_df is not None:
-        combined_df = ais_vessels_df
-    else:
-        combined_df = spark.createDataFrame([], schema=spark.table("silver.dim_vessel").schema)
+def merge_into(df, target, keys):
+    df.createOrReplaceTempView("src")
+    if not spark.catalog.tableExists(target):
+        df.limit(0).write.format("delta").saveAsTable(target)
 
-    window_spec = Window.partitionBy("mmsi").orderBy(col("load_timestamp").desc())
-    deduped_vessels = (
-        combined_df
-        .filter(col("mmsi").isNotNull())
-        .withColumn("rn", row_number().over(window_spec))
-        .filter(col("rn") == 1)
-        .drop("rn")
-        .withColumn("load_timestamp", current_timestamp())
+    on = " AND ".join(f"t.{k} = s.{k}" for k in keys)
+    spark.sql(f"""
+        MERGE INTO {target} t USING src s ON {on}
+        WHEN MATCHED THEN UPDATE SET *
+        WHEN NOT MATCHED THEN INSERT *
+    """)
+    m = spark.sql(f"DESCRIBE HISTORY {target} LIMIT 1").first()["operationMetrics"]
+    return int(m.get("numTargetRowsInserted", 0)), int(m.get("numTargetRowsUpdated", 0))
+
+
+with PipelineLogger(spark, layer="silver", parameter="dim_vessel") as logger:
+    noaa = spark.table("workspace.bronze.raw_noaa_ais").select(
+        F.col("MMSI").cast("long").alias("mmsi"),
+        F.to_timestamp("BaseDateTime").alias("ts"),
+        text(F.col("VesselName")).alias("vessel_name"),
+        text(F.regexp_replace(F.col("IMO"), "^IMO", "")).alias("imo"),
+        text(F.col("CallSign")).alias("call_sign"),
+        F.col("VesselType").cast("int").alias("vessel_type"),
+        positive(F.col("Length")).alias("length"),
+        positive(F.col("Width")).alias("width"),
+        positive(F.col("Draft")).alias("draft"),
     )
 
-    target_table = DeltaTable.forName(spark, "silver.dim_vessel")
+    live = spark.table("workspace.bronze.raw_aisstream_incremental").select(
+        F.col("mmsi"),
+        F.to_timestamp(F.substring("time_utc", 1, 19)).alias("ts"),
+        text(F.col("ship_name")).alias("vessel_name"),
+        text(F.col("imo")).alias("imo"),
+        text(F.col("call_sign")).alias("call_sign"),
+        F.col("ship_type").alias("vessel_type"),
+        positive(F.col("length")).alias("length"),
+        positive(F.col("width")).alias("width"),
+        positive(F.col("draft")).alias("draft"),
+    )
 
-    target_table.alias("target").merge(
-        deduped_vessels.alias("source"),
-        "target.mmsi = source.mmsi"
-    ).whenMatchedUpdate(
-        condition="""
-            target.vessel_name <=> source.vessel_name = false OR
-            target.destination <=> source.destination = false OR
-            target.draught <=> source.draught = false OR
-            target.eta <=> source.eta = false OR
-            target.imo IS NULL AND source.imo IS NOT NULL
-        """,
-        set={
-            "imo": coalesce(col("source.imo"), col("target.imo")),
-            "vessel_name": coalesce(col("source.vessel_name"), col("target.vessel_name")),
-            "call_sign": coalesce(col("source.call_sign"), col("target.call_sign")),
-            "vessel_type": coalesce(col("source.vessel_type"), col("target.vessel_type")),
-            "length": coalesce(col("source.length"), col("target.length")),
-            "width": coalesce(col("source.width"), col("target.width")),
-            "draught": coalesce(col("source.draught"), col("target.draught")),
-            "destination": coalesce(col("source.destination"), col("target.destination")),
-            "eta": coalesce(col("source.eta"), col("target.eta")),
-            "load_timestamp": col("source.load_timestamp"),
-        }
-    ).whenNotMatchedInsertAll().execute()
+    vessels = noaa.unionByName(live).filter(F.length(F.col("mmsi").cast("string")) == 9)
 
-    history = target_table.history(1).select("operationMetrics").collect()[0][0]
-    inserted = int(history.get("numTargetRowsInserted", 0))
-    updated = int(history.get("numTargetRowsUpdated", 0))
+    # for each vessel take the most recent non-null value of every attribute
+    w = (
+        Window.partitionBy("mmsi")
+        .orderBy(F.col("ts").desc_nulls_last())
+        .rowsBetween(Window.unboundedPreceding, Window.unboundedFollowing)
+    )
+    dim = (
+        vessels.select("mmsi", *[F.first(c, ignorenulls=True).over(w).alias(c) for c in COLS])
+        .dropDuplicates(["mmsi"])
+        .withColumn("load_timestamp", F.current_timestamp())
+    )
 
+    inserted, updated = merge_into(dim, TARGET, ["mmsi"])
     logger.set_metrics(rows_inserted=inserted, rows_updated=updated)
-    print(f"MERGE completed on silver.dim_vessel: {inserted} inserted, {updated} updated")

@@ -1,172 +1,48 @@
+import os
+import re
+import sys
+
 try:
-    import os, sys
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 except NameError:
     pass
+
+from pyspark.sql import functions as F
 from audit_logger import PipelineLogger
 
-from pyspark.sql.functions import current_timestamp, lit, col, expr
-from pyspark.sql.types import (
-    StructType,
-    StructField,
-    StringType,
-    IntegerType,
-)
+SOURCE = "/Volumes/workspace/bronze/raw_data/WPI.csv"
+TARGET = "workspace.bronze.raw_wpi_ports"
 
-try:
-    spark
-except NameError:
-    from pyspark.sql import SparkSession
-    spark = SparkSession.builder.getOrCreate()
 
-try:
-    dbutils
-except NameError:
-    dbutils = None
+def clean_name(name):
+    # the file starts with a BOM, so the first header comes through as "\ufeffportNumber"
+    name = name.replace("\ufeff", "").strip()
+    return re.sub(r"[ ,;{}()\n\t=]+", "_", name)
 
-if dbutils is not None:
-    try:
-        dbutils.widgets.text("source_path", "/Volumes/workspace/bronze/raw_data/WPI.csv", "Source WPI Path")
-        dbutils.widgets.text("batch_id", "wpi-reference-v1", "Batch Identifier")
-        source_path = dbutils.widgets.get("source_path")
-        batch_id = dbutils.widgets.get("batch_id")
-    except Exception:
-        source_path = "/Volumes/workspace/bronze/raw_data/WPI.csv"
-        batch_id = "wpi-reference-v1"
-else:
-    source_path = "/Volumes/workspace/bronze/raw_data/WPI.csv"
-    batch_id = "wpi-reference-v1"
 
-schema = StructType([
-    StructField("portNumber", IntegerType(), True),
-    StructField("portName", StringType(), True),
-    StructField("regionNumber", IntegerType(), True),
-    StructField("regionName", StringType(), True),
-    StructField("countryCode", StringType(), True),
-    StructField("countryName", StringType(), True),
-    StructField("latitude", StringType(), True),
-    StructField("longitude", StringType(), True),
-    StructField("publicationNumber", StringType(), True),
-    StructField("chartNumber", StringType(), True),
-    StructField("navArea", StringType(), True),
-    StructField("harborSize", StringType(), True),
-    StructField("harborType", StringType(), True),
-    StructField("shelter", StringType(), True),
-    StructField("erTide", StringType(), True),
-    StructField("erSwell", StringType(), True),
-    StructField("erIce", StringType(), True),
-    StructField("erOther", StringType(), True),
-    StructField("overheadLimits", StringType(), True),
-    StructField("chDepth", StringType(), True),
-    StructField("anDepth", StringType(), True),
-    StructField("cpDepth", StringType(), True),
-    StructField("otDepth", StringType(), True),
-    StructField("tide", StringType(), True),
-    StructField("maxVesselLength", StringType(), True),
-    StructField("maxVesselBeam", StringType(), True),
-    StructField("maxVesselDraft", StringType(), True),
-    StructField("goodHoldingGround", StringType(), True),
-    StructField("turningArea", StringType(), True),
-    StructField("firstPortOfEntry", StringType(), True),
-    StructField("usRep", StringType(), True),
-    StructField("ptCompulsory", StringType(), True),
-    StructField("ptAvailable", StringType(), True),
-    StructField("ptLocalAssist", StringType(), True),
-    StructField("ptAdvisable", StringType(), True),
-    StructField("tugsSalvage", StringType(), True),
-    StructField("tugsAssist", StringType(), True),
-    StructField("qtPratique", StringType(), True),
-    StructField("qtOther", StringType(), True),
-    StructField("cmTelephone", StringType(), True),
-    StructField("cmTelegraph", StringType(), True),
-    StructField("cmRadio", StringType(), True),
-    StructField("cmRadioTel", StringType(), True),
-    StructField("cmAir", StringType(), True),
-    StructField("cmRail", StringType(), True),
-    StructField("loWharves", StringType(), True),
-    StructField("loAnchor", StringType(), True),
-    StructField("loMedMoor", StringType(), True),
-    StructField("loBeachMoor", StringType(), True),
-    StructField("loIceMoor", StringType(), True),
-    StructField("medFacilities", StringType(), True),
-    StructField("garbageDisposal", StringType(), True),
-    StructField("degauss", StringType(), True),
-    StructField("dirtyBallast", StringType(), True),
-    StructField("crFixed", StringType(), True),
-    StructField("crMobile", StringType(), True),
-    StructField("crFloating", StringType(), True),
-    StructField("lifts100", StringType(), True),
-    StructField("lifts50", StringType(), True),
-    StructField("lifts25", StringType(), True),
-    StructField("lifts0", StringType(), True),
-    StructField("srServices", StringType(), True),
-    StructField("srProvisions", StringType(), True),
-    StructField("srWater", StringType(), True),
-    StructField("srFuel", StringType(), True),
-    StructField("srDiesel", StringType(), True),
-    StructField("srDeck", StringType(), True),
-    StructField("srEngine", StringType(), True),
-    StructField("repairCode", StringType(), True),
-    StructField("drydock", StringType(), True),
-    StructField("railway", StringType(), True),
-    StructField("loEta", StringType(), True),
-    StructField("loCable", StringType(), True),
-    StructField("loIce", StringType(), True),
-    StructField("loRollOn", StringType(), True),
-    StructField("loContainer", StringType(), True),
-    StructField("loBulk", StringType(), True),
-    StructField("loBreakBulk", StringType(), True),
-    StructField("loOilTerm", StringType(), True),
-    StructField("loLongTerm", StringType(), True),
-    StructField("loOther", StringType(), True),
-    StructField("loDangCargo", StringType(), True),
-    StructField("loLiquidBulk", StringType(), True),
-    StructField("srIceBreaking", StringType(), True),
-    StructField("srDiving", StringType(), True),
-    StructField("cranesContainer", StringType(), True),
-    StructField("unloCode", StringType(), True),
-    StructField("dnc", StringType(), True),
-    StructField("s121WaterBody", StringType(), True),
-    StructField("s57Enc", StringType(), True),
-    StructField("s101Enc", StringType(), True),
-    StructField("dodWaterBody", StringType(), True),
-    StructField("alternateName", StringType(), True),
-    StructField("entranceWidth", StringType(), True),
-    StructField("lngTerminalDepth", StringType(), True),
-    StructField("offMaxVesselLength", StringType(), True),
-    StructField("offMaxVesselBeam", StringType(), True),
-    StructField("offMaxVesselDraft", StringType(), True),
-    StructField("_corrupt_record", StringType(), True),
-])
-
-with PipelineLogger(spark, layer="Raw-to-Bronze (WPI)", parameter=batch_id) as logger:
-    raw_df = (
-        spark.read.format("csv")
-        .option("header", "true")
-        .load(source_path)
+with PipelineLogger(spark, layer="bronze", parameter="wpi_reference") as logger:
+    # escape='"' matters here: DMS values like "30°20'00""N" contain doubled quotes
+    raw = (
+        spark.read
+        .option("header", True)
+        .option("multiLine", True)
+        .option("escape", '"')
+        .csv(SOURCE)
     )
 
-    for c in raw_df.columns:
-        clean_c = c.replace("\ufeff", "").strip()
-        if clean_c != c:
-            raw_df = raw_df.withColumnRenamed(c, clean_c)
+    df = raw.toDF(*[clean_name(c) for c in raw.columns])
+    df = df.withColumn("portNumber", F.col("portNumber").cast("int"))
 
-    valid_df = (
-        raw_df
-        .withColumn("portNumber", col("portNumber").cast("int"))
-        .withColumn("source", lit("wpi"))
-        .withColumn("ingestion_timestamp", current_timestamp())
-        .withColumn("batch_id", lit(batch_id))
-        .withColumn("load_timestamp", current_timestamp())
-    )
+    missing = df.filter(F.col("portNumber").isNull()).count()
+    if missing:
+        print(f"Dropping {missing} rows without a valid portNumber")
+    df = df.filter(F.col("portNumber").isNotNull())
 
     (
-        valid_df.write.format("delta")
+        df.write.format("delta")
         .mode("overwrite")
         .option("overwriteSchema", "true")
-        .saveAsTable("bronze.raw_wpi_ports")
+        .saveAsTable(TARGET)
     )
 
-    valid_count = valid_df.count()
-    logger.set_metrics(rows_inserted=valid_count, rows_updated=0)
-    print(f"Ingested {valid_count} records into bronze.raw_wpi_ports")
+    logger.set_metrics(rows_inserted=spark.table(TARGET).count())

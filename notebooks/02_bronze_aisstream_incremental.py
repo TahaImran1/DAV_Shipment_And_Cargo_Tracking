@@ -1,173 +1,82 @@
+import os
+import sys
+from datetime import datetime, timezone
+
 try:
-    import os, sys
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 except NameError:
     pass
+
+from pyspark.sql import functions as F
 from audit_logger import PipelineLogger
 
-from pyspark.sql.functions import current_timestamp, lit, col, expr
-from pyspark.sql.types import (
-    StructType,
-    StructField,
-    StringType,
-    DoubleType,
-    IntegerType,
-    LongType,
-    BooleanType,
-)
+SOURCE = "/Volumes/workspace/bronze/raw_data/ais_daily_20261003.json"
+TARGET = "workspace.bronze.raw_aisstream_incremental"
+QUARANTINE = "workspace.bronze.quarantine"
 
-try:
-    spark
-except NameError:
-    from pyspark.sql import SparkSession
-    spark = SparkSession.builder.getOrCreate()
+batch_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
-try:
-    dbutils
-except NameError:
-    dbutils = None
 
-if dbutils is not None:
-    try:
-        dbutils.widgets.text("batch_file", "/Volumes/workspace/bronze/raw_data/ais_daily_20261003.json", "Source Batch File or Directory")
-        dbutils.widgets.text("batch_id", "incremental-auto", "Batch Identifier")
-        batch_file = dbutils.widgets.get("batch_file")
-        batch_id = dbutils.widgets.get("batch_id")
-    except Exception:
-        batch_file = "/Volumes/workspace/bronze/raw_data/ais_daily_20261003.json"
-        batch_id = "incremental-auto"
-else:
-    batch_file = "/Volumes/workspace/bronze/raw_data/ais_daily_20261003.json"
-    batch_id = "incremental-auto"
+def j(path):
+    return F.get_json_object("value", path)
 
-dimension_schema = StructType([
-    StructField("A", IntegerType(), True),
-    StructField("B", IntegerType(), True),
-    StructField("C", IntegerType(), True),
-    StructField("D", IntegerType(), True),
-])
 
-eta_schema = StructType([
-    StructField("Month", IntegerType(), True),
-    StructField("Day", IntegerType(), True),
-    StructField("Hour", IntegerType(), True),
-    StructField("Minute", IntegerType(), True),
-])
-
-position_report_schema = StructType([
-    StructField("MessageID", IntegerType(), True),
-    StructField("RepeatIndicator", IntegerType(), True),
-    StructField("UserID", LongType(), True),
-    StructField("Valid", BooleanType(), True),
-    StructField("NavigationalStatus", IntegerType(), True),
-    StructField("RateOfTurn", DoubleType(), True),
-    StructField("Sog", DoubleType(), True),
-    StructField("PositionAccuracy", BooleanType(), True),
-    StructField("Longitude", DoubleType(), True),
-    StructField("Latitude", DoubleType(), True),
-    StructField("Cog", DoubleType(), True),
-    StructField("TrueHeading", DoubleType(), True),
-    StructField("Timestamp", IntegerType(), True),
-    StructField("SpecialManoeuvreIndicator", IntegerType(), True),
-    StructField("Spare", IntegerType(), True),
-    StructField("Raim", BooleanType(), True),
-    StructField("CommunicationState", LongType(), True),
-])
-
-ship_static_data_schema = StructType([
-    StructField("MessageID", IntegerType(), True),
-    StructField("RepeatIndicator", IntegerType(), True),
-    StructField("UserID", LongType(), True),
-    StructField("Valid", BooleanType(), True),
-    StructField("AisVersion", IntegerType(), True),
-    StructField("ImoNumber", LongType(), True),
-    StructField("CallSign", StringType(), True),
-    StructField("Name", StringType(), True),
-    StructField("Type", IntegerType(), True),
-    StructField("Dimension", dimension_schema, True),
-    StructField("FixType", IntegerType(), True),
-    StructField("Eta", eta_schema, True),
-    StructField("MaximumStaticDraught", DoubleType(), True),
-    StructField("Destination", StringType(), True),
-    StructField("Dte", IntegerType(), True),
-    StructField("Spare", BooleanType(), True),
-])
-
-static_data_report_schema = StructType([
-    StructField("MessageID", IntegerType(), True),
-    StructField("RepeatIndicator", IntegerType(), True),
-    StructField("UserID", LongType(), True),
-    StructField("Valid", BooleanType(), True),
-    StructField("PartNumber", IntegerType(), True),
-])
-
-message_body_schema = StructType([
-    StructField("PositionReport", position_report_schema, True),
-    StructField("StandardClassBPositionReport", position_report_schema, True),
-    StructField("ExtendedClassBPositionReport", position_report_schema, True),
-    StructField("ShipStaticData", ship_static_data_schema, True),
-    StructField("StaticDataReport", static_data_report_schema, True),
-])
-
-metadata_schema = StructType([
-    StructField("MMSI", LongType(), True),
-    StructField("MMSI_String", LongType(), True),
-    StructField("ShipName", StringType(), True),
-    StructField("latitude", DoubleType(), True),
-    StructField("longitude", DoubleType(), True),
-    StructField("time_utc", StringType(), True),
-])
-
-schema = StructType([
-    StructField("MetaData", metadata_schema, True),
-    StructField("MessageType", StringType(), True),
-    StructField("Message", message_body_schema, True),
-    StructField("_collected_at", StringType(), True),
-    StructField("_corrupt_record", StringType(), True),
-])
-
-with PipelineLogger(spark, layer="Raw-to-Bronze (AISStream)", parameter=batch_id) as logger:
-    raw_df = (
-        spark.read.format("json")
-        .option("mode", "PERMISSIVE")
-        .option("columnNameOfCorruptRecord", "_corrupt_record")
-        .schema(schema)
-        .load(batch_file)
+def position(field):
+    return F.coalesce(
+        j(f"$.Message.PositionReport.{field}"),
+        j(f"$.Message.StandardClassBPositionReport.{field}"),
     )
 
-    corrupt_df = raw_df.filter(col("_corrupt_record").isNotNull())
-    corrupt_count = corrupt_df.count()
 
-    if corrupt_count > 0:
-        quarantine_records = (
-            corrupt_df.select(
-                expr("uuid()").alias("quarantine_id"),
-                lit("aisstream").alias("source"),
-                lit(batch_id).alias("batch_id"),
-                col("_corrupt_record").alias("raw_payload"),
-                lit("Malformed JSON record").alias("error_reason"),
-                current_timestamp().alias("quarantine_timestamp"),
+def static(field):
+    return j(f"$.Message.ShipStaticData.{field}")
+
+
+with PipelineLogger(spark, layer="bronze", parameter="aisstream_incremental") as logger:
+    # one JSON message per line; get_json_object returns null on bad lines instead of failing
+    lines = spark.read.text(SOURCE)
+
+    parsed = lines.select(
+        j("$.MessageType").alias("message_type"),
+        j("$.MetaData.MMSI").cast("long").alias("mmsi"),
+        j("$.MetaData.ShipName").alias("ship_name"),
+        j("$.MetaData.latitude").cast("double").alias("latitude"),
+        j("$.MetaData.longitude").cast("double").alias("longitude"),
+        j("$.MetaData.time_utc").alias("time_utc"),
+        position("Sog").cast("double").alias("sog"),
+        position("Cog").cast("double").alias("cog"),
+        position("TrueHeading").cast("int").alias("true_heading"),
+        position("NavigationalStatus").cast("int").alias("nav_status"),
+        static("ImoNumber").alias("imo"),
+        static("CallSign").alias("call_sign"),
+        static("Type").cast("int").alias("ship_type"),
+        (static("Dimension.A").cast("double") + static("Dimension.B").cast("double")).alias("length"),
+        (static("Dimension.C").cast("double") + static("Dimension.D").cast("double")).alias("width"),
+        static("MaximumStaticDraught").cast("double").alias("draft"),
+        F.col("value").alias("raw_json"),
+    )
+
+    bad = parsed.filter(F.col("mmsi").isNull())
+    if not bad.isEmpty():
+        (
+            bad.select(
+                F.expr("uuid()").alias("quarantine_id"),
+                F.lit("aisstream").alias("source"),
+                F.lit(batch_id).alias("batch_id"),
+                F.col("raw_json").alias("raw_payload"),
+                F.lit("corrupt JSON or missing MMSI").alias("error_reason"),
+                F.current_timestamp().alias("quarantine_timestamp"),
             )
+            .write.format("delta").mode("append").saveAsTable(QUARANTINE)
         )
-        quarantine_records.write.format("delta").mode("append").saveAsTable("bronze.quarantine")
-        print(f"Quarantined {corrupt_count} records")
 
-    valid_df = (
-        raw_df.filter(col("_corrupt_record").isNull())
-        .drop("_corrupt_record")
-        .withColumn("source", lit("aisstream"))
-        .withColumn("ingestion_timestamp", current_timestamp())
-        .withColumn("batch_id", lit(batch_id))
-        .withColumn("load_timestamp", current_timestamp())
+    good = (
+        parsed.filter(F.col("mmsi").isNotNull())
+        .withColumn("source", F.lit("aisstream"))
+        .withColumn("batch_id", F.lit(batch_id))
+        .withColumn("ingestion_timestamp", F.current_timestamp())
     )
 
-    (
-        valid_df.write.format("delta")
-        .mode("append")
-        .option("mergeSchema", "true")
-        .saveAsTable("bronze.raw_ais_messages")
-    )
+    good.write.format("delta").mode("append").saveAsTable(TARGET)
 
-    valid_count = valid_df.count()
-    logger.set_metrics(rows_inserted=valid_count, rows_updated=0)
-    print(f"Ingested {valid_count} records into bronze.raw_ais_messages")
+    logger.set_metrics(rows_inserted=spark.table(TARGET).filter(F.col("batch_id") == batch_id).count())

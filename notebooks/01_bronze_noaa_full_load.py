@@ -1,107 +1,59 @@
+import os
+import sys
+from datetime import datetime, timezone
+
 try:
-    import os, sys
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 except NameError:
     pass
+
+from pyspark.sql import functions as F
 from audit_logger import PipelineLogger
 
-from pyspark.sql.functions import current_timestamp, lit, col, expr
-from pyspark.sql.types import (
-    StructType,
-    StructField,
-    StringType,
-    DoubleType,
-    IntegerType,
-)
+SOURCE = "/Volumes/workspace/bronze/raw_data/AIS_Full_Load.csv"
+TARGET = "workspace.bronze.raw_noaa_ais"
+QUARANTINE = "workspace.bronze.quarantine"
 
-try:
-    spark
-except NameError:
-    from pyspark.sql import SparkSession
-    spark = SparkSession.builder.getOrCreate()
+batch_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
-try:
-    dbutils
-except NameError:
-    dbutils = None
 
-if dbutils is not None:
-    try:
-        dbutils.widgets.text("source_path", "/Volumes/workspace/bronze/raw_data/AIS_Full_Load.csv", "Source File Path")
-        dbutils.widgets.text("batch_id", "2024-01-full-load", "Batch Identifier")
-        source_path = dbutils.widgets.get("source_path")
-        batch_id = dbutils.widgets.get("batch_id")
-    except Exception:
-        source_path = "/Volumes/workspace/bronze/raw_data/AIS_Full_Load.csv"
-        batch_id = "2024-01-full-load"
-else:
-    source_path = "/Volumes/workspace/bronze/raw_data/AIS_Full_Load.csv"
-    batch_id = "2024-01-full-load"
-
-schema = StructType([
-    StructField("MMSI", StringType(), True),
-    StructField("BaseDateTime", StringType(), True),
-    StructField("LAT", DoubleType(), True),
-    StructField("LON", DoubleType(), True),
-    StructField("SOG", DoubleType(), True),
-    StructField("COG", DoubleType(), True),
-    StructField("Heading", DoubleType(), True),
-    StructField("VesselName", StringType(), True),
-    StructField("IMO", StringType(), True),
-    StructField("CallSign", StringType(), True),
-    StructField("VesselType", IntegerType(), True),
-    StructField("Status", IntegerType(), True),
-    StructField("Length", DoubleType(), True),
-    StructField("Width", DoubleType(), True),
-    StructField("Draft", DoubleType(), True),
-    StructField("Cargo", IntegerType(), True),
-    StructField("transceiverClass", StringType(), True),
-    StructField("_corrupt_record", StringType(), True),
-])
-
-with PipelineLogger(spark, layer="Raw-to-Bronze (NOAA)", parameter=batch_id) as logger:
-    raw_df = (
-        spark.read.format("csv")
-        .option("header", "true")
-        .option("mode", "PERMISSIVE")
-        .option("columnNameOfCorruptRecord", "_corrupt_record")
-        .schema(schema)
-        .load(source_path)
-    )
-
-    corrupt_df = raw_df.filter(col("_corrupt_record").isNotNull())
-    corrupt_count = corrupt_df.count()
-
-    if corrupt_count > 0:
-        quarantine_records = (
-            corrupt_df.select(
-                expr("uuid()").alias("quarantine_id"),
-                lit("noaa").alias("source"),
-                lit(batch_id).alias("batch_id"),
-                col("_corrupt_record").alias("raw_payload"),
-                lit("Malformed CSV record").alias("error_reason"),
-                current_timestamp().alias("quarantine_timestamp"),
-            )
+def quarantine(df, source, reason):
+    (
+        df.select(
+            F.expr("uuid()").alias("quarantine_id"),
+            F.lit(source).alias("source"),
+            F.lit(batch_id).alias("batch_id"),
+            F.col("raw_payload"),
+            F.lit(reason).alias("error_reason"),
+            F.current_timestamp().alias("quarantine_timestamp"),
         )
-        quarantine_records.write.format("delta").mode("append").saveAsTable("bronze.quarantine")
-        print(f"Quarantined {corrupt_count} corrupt records")
-
-    valid_df = (
-        raw_df.filter(col("_corrupt_record").isNull())
-        .drop("_corrupt_record")
-        .withColumn("source", lit("noaa"))
-        .withColumn("ingestion_timestamp", current_timestamp())
-        .withColumn("batch_id", lit(batch_id))
-        .withColumn("load_timestamp", current_timestamp())
+        .write.format("delta").mode("append").saveAsTable(QUARANTINE)
     )
+
+
+with PipelineLogger(spark, layer="bronze", parameter="noaa_full_load") as logger:
+    # everything stays a string in bronze, typing happens in silver
+    raw = spark.read.option("header", True).csv(SOURCE)
+    raw = raw.toDF(*[c.replace("\ufeff", "").strip() for c in raw.columns])
+
+    is_bad = F.col("MMSI").isNull() | F.col("BaseDateTime").isNull()
+
+    good = (
+        raw.filter(~is_bad)
+        .withColumn("source", F.lit("noaa"))
+        .withColumn("batch_id", F.lit(batch_id))
+        .withColumn("ingestion_timestamp", F.current_timestamp())
+    )
+
+    bad = raw.filter(is_bad).withColumn("raw_payload", F.to_json(F.struct(*raw.columns)))
+    if not bad.isEmpty():
+        quarantine(bad, "noaa", "missing MMSI or BaseDateTime")
 
     (
-        valid_df.write.format("delta")
-        .mode("append")
-        .option("mergeSchema", "true")
-        .saveAsTable("bronze.raw_noaa_ais")
+        good.write.format("delta")
+        .mode("overwrite")
+        .option("overwriteSchema", "true")
+        .saveAsTable(TARGET)
     )
 
-    valid_count = valid_df.count()
-    logger.set_metrics(rows_inserted=valid_count, rows_updated=0)
-    print(f"Ingested {valid_count} records into bronze.raw_noaa_ais")
+    logger.set_metrics(rows_inserted=spark.table(TARGET).count())

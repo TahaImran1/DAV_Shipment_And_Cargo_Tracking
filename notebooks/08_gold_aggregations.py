@@ -1,209 +1,116 @@
+import os
+import sys
+
 try:
-    import os, sys
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 except NameError:
     pass
+
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 from audit_logger import PipelineLogger
 
-from delta.tables import DeltaTable
-from pyspark.sql.functions import (
-    col,
-    to_date,
-    date_format,
-    count as spark_count,
-    countDistinct,
-    avg as spark_avg,
-    max as spark_max,
-    min as spark_min,
-    round as spark_round,
-    current_timestamp,
-    concat_ws,
-    lit,
-    coalesce,
-    when,
-)
+PORT_RADIUS_KM = 15
+MAX_GAP_HOURS = 2          # ignore gaps between pings longer than this
+MOVING_SOG = 0.5           # knots
+DESIGN_SPEED_KNOTS = 14
+CO2_PER_TONNE_FUEL = 3.114
 
-try:
-    spark
-except NameError:
-    from pyspark.sql import SparkSession
-    spark = SparkSession.builder.getOrCreate()
 
-spark.sql("CREATE SCHEMA IF NOT EXISTS gold")
+def haversine_km(lat1, lon1, lat2, lon2):
+    dlat = F.radians(lat2 - lat1)
+    dlon = F.radians(lon2 - lon1)
+    a = F.sin(dlat / 2) ** 2 + F.cos(F.radians(lat1)) * F.cos(F.radians(lat2)) * F.sin(dlon / 2) ** 2
+    return 2 * 6371 * F.asin(F.sqrt(F.least(F.lit(1.0), a)))
 
-spark.sql("""
-    CREATE TABLE IF NOT EXISTS gold.gold_vessel_activity (
-        mmsi BIGINT NOT NULL,
-        vessel_name STRING,
-        vessel_type INT,
-        activity_date DATE NOT NULL,
-        total_pings BIGINT,
-        avg_speed_knots DOUBLE,
-        max_speed_knots DOUBLE,
-        estimated_distance_nm DOUBLE,
-        load_timestamp TIMESTAMP NOT NULL
+
+def save(df, table):
+    (
+        df.write.format("delta")
+        .mode("overwrite")
+        .option("overwriteSchema", "true")
+        .saveAsTable(table)
     )
-    USING DELTA
-    PARTITIONED BY (activity_date)
-""")
+    return spark.table(table).count()
 
-spark.sql("""
-    CREATE TABLE IF NOT EXISTS gold.gold_port_performance (
-        port_code STRING NOT NULL,
-        port_name STRING,
-        country STRING,
-        activity_date DATE NOT NULL,
-        active_vessels BIGINT,
-        total_observations BIGINT,
-        avg_vessel_speed DOUBLE,
-        load_timestamp TIMESTAMP NOT NULL
+
+with PipelineLogger(spark, layer="gold", parameter="aggregations") as logger:
+    pos = spark.table("workspace.silver.fact_vessel_position")
+
+    # ---- port congestion ----
+    ports = spark.table("workspace.silver.dim_port").filter(
+        F.col("latitude").isNotNull() & F.col("longitude").isNotNull()
+    ).select("port_code", "port_name", F.col("latitude").alias("p_lat"), F.col("longitude").alias("p_lon"))
+
+    # one point per slow-moving vessel per day keeps the port join small
+    stationary = (
+        pos.filter(F.col("sog") < 1)
+        .withColumn("date", F.to_date("timestamp"))
+        .groupBy("mmsi", "date")
+        .agg(F.avg("latitude").alias("lat"), F.avg("longitude").alias("lon"))
     )
-    USING DELTA
-    PARTITIONED BY (activity_date)
-""")
 
-spark.sql("""
-    CREATE TABLE IF NOT EXISTS gold.gold_route_performance (
-        departure_port STRING NOT NULL,
-        arrival_port STRING NOT NULL,
-        year_month STRING NOT NULL,
-        completed_voyages BIGINT,
-        avg_transit_hours DOUBLE,
-        avg_speed_knots DOUBLE,
-        load_timestamp TIMESTAMP NOT NULL
+    near_box = (F.abs(F.col("lat") - F.col("p_lat")) < 0.5) & (F.abs(F.col("lon") - F.col("p_lon")) < 0.5)
+
+    congestion = (
+        stationary.join(F.broadcast(ports), near_box)
+        .withColumn("dist_km", haversine_km(F.col("lat"), F.col("lon"), F.col("p_lat"), F.col("p_lon")))
+        .filter(F.col("dist_km") <= PORT_RADIUS_KM)
+        .withColumn("rn", F.row_number().over(Window.partitionBy("mmsi", "date").orderBy("dist_km")))
+        .filter("rn = 1")
+        .groupBy("port_code", "port_name", "date")
+        .agg(F.count("*").alias("vessels_in_port"))
     )
-    USING DELTA
-""")
 
-spark.sql("""
-    CREATE TABLE IF NOT EXISTS gold.gold_daily_maritime_activity (
-        activity_date DATE NOT NULL,
-        total_position_reports BIGINT,
-        unique_active_vessels BIGINT,
-        avg_fleet_speed DOUBLE,
-        load_timestamp TIMESTAMP NOT NULL
+    # ---- per-leg metrics (consecutive pings of the same vessel) ----
+    w = Window.partitionBy("mmsi").orderBy("timestamp")
+    legs = (
+        pos.withColumn("prev_lat", F.lag("latitude").over(w))
+        .withColumn("prev_lon", F.lag("longitude").over(w))
+        .withColumn("prev_ts", F.lag("timestamp").over(w))
+        .withColumn("hours", (F.unix_timestamp("timestamp") - F.unix_timestamp("prev_ts")) / 3600)
+        .filter((F.col("hours") > 0) & (F.col("hours") <= MAX_GAP_HOURS))
+        .withColumn("distance_km", haversine_km(F.col("prev_lat"), F.col("prev_lon"), F.col("latitude"), F.col("longitude")))
+        .withColumn("date", F.to_date("timestamp"))
     )
-    USING DELTA
-""")
 
-with PipelineLogger(spark, layer="Silver-to-Gold (Aggregations)", parameter="all-gold-tables") as logger:
-    if not spark.catalog.tableExists("silver.fact_vessel_position"):
-        print("Table silver.fact_vessel_position does not exist yet.")
-        logger.set_metrics(rows_inserted=0, rows_updated=0)
-    else:
-        facts = spark.table("silver.fact_vessel_position")
-        vessels = spark.table("silver.dim_vessel") if spark.catalog.tableExists("silver.dim_vessel") else None
-        ports = spark.table("silver.dim_port") if spark.catalog.tableExists("silver.dim_port") else None
-        voyages = spark.table("silver.dim_voyage") if spark.catalog.tableExists("silver.dim_voyage") else None
+    moving_hours = F.sum(F.when(F.col("sog") >= MOVING_SOG, F.col("hours")).otherwise(0))
 
-        total_inserted = 0
-        total_updated = 0
+    activity = legs.groupBy("mmsi", "date").agg(
+        F.round(F.sum("distance_km"), 2).alias("total_distance_km"),
+        F.round(F.avg("sog"), 2).alias("avg_speed_knots"),
+        F.round(moving_hours, 2).alias("operating_hours"),
+    )
 
-        vessel_daily = (
-            facts
-            .withColumn("activity_date", to_date(col("timestamp")))
-            .groupBy("mmsi", "activity_date")
-            .agg(
-                spark_count("position_id").alias("total_pings"),
-                spark_round(spark_avg("sog"), 2).alias("avg_speed_knots"),
-                spark_round(spark_max("sog"), 2).alias("max_speed_knots"),
-                spark_round(spark_avg("sog") * (spark_count("position_id") / 60.0), 2).alias("estimated_distance_nm"),
-            )
+    # ---- emissions proxy: rough fuel burn using the cube law on speed ----
+    vessels = spark.table("workspace.silver.dim_vessel").select("mmsi", "vessel_type", "length")
+
+    vt = F.col("vessel_type")
+    type_factor = (
+        F.when(vt.between(80, 89), 1.4)    # tankers
+        .when(vt.between(70, 79), 1.2)     # cargo
+        .when(vt.between(60, 69), 1.5)     # passenger
+        .when(vt.between(30, 39), 0.3)     # fishing / towing / etc.
+        .otherwise(0.6)
+    )
+    length_m = F.coalesce(F.col("length"), F.lit(100.0))
+    tonnes_per_hour = type_factor * (length_m / 100) ** 2
+    speed_ratio = F.least(F.col("sog"), F.lit(30.0)) / DESIGN_SPEED_KNOTS
+    fuel_tonnes = tonnes_per_hour * speed_ratio ** 3 * F.col("hours")
+
+    emissions = (
+        legs.join(vessels, "mmsi", "left")
+        .withColumn("fuel_tonnes", fuel_tonnes)
+        .groupBy("mmsi", "vessel_type", "date")
+        .agg(
+            F.round(F.sum("fuel_tonnes"), 3).alias("fuel_burn_proxy_tonnes"),
+            F.round(moving_hours, 2).alias("operating_hours"),
         )
+        .withColumn("co2_proxy_tonnes", F.round(F.col("fuel_burn_proxy_tonnes") * CO2_PER_TONNE_FUEL, 3))
+    )
 
-        if vessels is not None:
-            vessel_daily = vessel_daily.join(vessels.select("mmsi", "vessel_name", "vessel_type"), on="mmsi", how="left")
-        else:
-            vessel_daily = vessel_daily.withColumn("vessel_name", lit("UNKNOWN")).withColumn("vessel_type", lit(0))
+    total = save(congestion, "workspace.gold.port_congestion_daily")
+    total += save(activity, "workspace.gold.daily_vessel_activity")
+    total += save(emissions, "workspace.gold.vessel_emissions_proxy")
 
-        vessel_daily = vessel_daily.withColumn("load_timestamp", current_timestamp())
-
-        t1 = DeltaTable.forName(spark, "gold.gold_vessel_activity")
-        t1.alias("target").merge(
-            vessel_daily.alias("source"),
-            "target.mmsi = source.mmsi AND target.activity_date = source.activity_date"
-        ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
-
-        h1 = t1.history(1).select("operationMetrics").collect()[0][0]
-        total_inserted += int(h1.get("numTargetRowsInserted", 0))
-        total_updated += int(h1.get("numTargetRowsUpdated", 0))
-
-        port_activity = (
-            facts
-            .withColumn("activity_date", to_date(col("timestamp")))
-            .withColumn(
-                "port_code",
-                when(col("latitude") >= 29.35, lit("US HOU")).otherwise(lit("US GLS"))
-            )
-            .groupBy("port_code", "activity_date")
-            .agg(
-                countDistinct("mmsi").alias("active_vessels"),
-                spark_count("position_id").alias("total_observations"),
-                spark_round(spark_avg("sog"), 2).alias("avg_vessel_speed"),
-            )
-        )
-
-        if ports is not None:
-            port_activity = port_activity.join(ports.select("port_code", "port_name", "country"), on="port_code", how="left")
-        else:
-            port_activity = port_activity.withColumn("port_name", col("port_code")).withColumn("country", lit("USA"))
-
-        port_activity = port_activity.withColumn("load_timestamp", current_timestamp())
-
-        t2 = DeltaTable.forName(spark, "gold.gold_port_performance")
-        t2.alias("target").merge(
-            port_activity.alias("source"),
-            "target.port_code = source.port_code AND target.activity_date = source.activity_date"
-        ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
-
-        h2 = t2.history(1).select("operationMetrics").collect()[0][0]
-        total_inserted += int(h2.get("numTargetRowsInserted", 0))
-        total_updated += int(h2.get("numTargetRowsUpdated", 0))
-
-        if voyages is not None:
-            route_summary = (
-                voyages
-                .withColumn("year_month", date_format(col("start_ts"), "yyyy-MM"))
-                .groupBy("departure_port", "arrival_port", "year_month")
-                .agg(
-                    spark_count("voyage_id").alias("completed_voyages"),
-                    spark_round(spark_avg((col("end_ts").cast("bigint") - col("start_ts").cast("bigint")) / 3600.0), 2).alias("avg_transit_hours"),
-                    spark_round(spark_avg("avg_sog"), 2).alias("avg_speed_knots"),
-                )
-                .withColumn("load_timestamp", current_timestamp())
-            )
-
-            t3 = DeltaTable.forName(spark, "gold.gold_route_performance")
-            t3.alias("target").merge(
-                route_summary.alias("source"),
-                "target.departure_port = source.departure_port AND target.arrival_port = source.arrival_port AND target.year_month = source.year_month"
-            ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
-
-            h3 = t3.history(1).select("operationMetrics").collect()[0][0]
-            total_inserted += int(h3.get("numTargetRowsInserted", 0))
-            total_updated += int(h3.get("numTargetRowsUpdated", 0))
-
-        daily_traffic = (
-            facts
-            .withColumn("activity_date", to_date(col("timestamp")))
-            .groupBy("activity_date")
-            .agg(
-                spark_count("position_id").alias("total_position_reports"),
-                countDistinct("mmsi").alias("unique_active_vessels"),
-                spark_round(spark_avg("sog"), 2).alias("avg_fleet_speed"),
-            )
-            .withColumn("load_timestamp", current_timestamp())
-        )
-
-        t4 = DeltaTable.forName(spark, "gold.gold_daily_maritime_activity")
-        t4.alias("target").merge(
-            daily_traffic.alias("source"),
-            "target.activity_date = source.activity_date"
-        ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
-
-        h4 = t4.history(1).select("operationMetrics").collect()[0][0]
-        total_inserted += int(h4.get("numTargetRowsInserted", 0))
-        total_updated += int(h4.get("numTargetRowsUpdated", 0))
-
-        logger.set_metrics(rows_inserted=total_inserted, rows_updated=total_updated)
-        print(f"Gold Aggregations completed: {total_inserted} inserted, {total_updated} updated across all tables")
+    logger.set_metrics(rows_inserted=total)
