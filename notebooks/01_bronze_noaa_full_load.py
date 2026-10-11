@@ -1,3 +1,4 @@
+# Databricks notebook source
 import os
 import sys
 from datetime import datetime, timezone
@@ -7,7 +8,7 @@ try:
 except NameError:
     pass
 
-from pyspark.sql import functions as F
+from pyspark.sql.functions import col, lit, current_timestamp, expr, to_json, struct
 from pyspark.sql.types import StructType, StructField, StringType
 from audit_logger import PipelineLogger
 
@@ -23,6 +24,7 @@ except Exception:
 TARGET = "workspace.bronze.raw_noaa_ais"
 QUARANTINE = "workspace.bronze.quarantine"
 
+# Explicit Schema Definition (Schema-on-Read as in Lab 4 Task 02)
 NOAA_SCHEMA = StructType([
     StructField("MMSI", StringType(), True),
     StructField("BaseDateTime", StringType(), True),
@@ -47,14 +49,17 @@ NOAA_SCHEMA = StructType([
 def quarantine(df, source, reason):
     (
         df.select(
-            F.expr("uuid()").alias("quarantine_id"),
-            F.lit(source).alias("source"),
-            F.lit(batch_id).alias("batch_id"),
-            F.col("raw_payload"),
-            F.lit(reason).alias("error_reason"),
-            F.current_timestamp().alias("quarantine_timestamp"),
+            expr("uuid()").alias("quarantine_id"),
+            lit(source).alias("source"),
+            lit(batch_id).alias("batch_id"),
+            col("raw_payload"),
+            lit(reason).alias("error_reason"),
+            current_timestamp().alias("quarantine_timestamp"),
         )
-        .write.format("delta").mode("append").saveAsTable(QUARANTINE)
+        .write
+        .format("delta")
+        .mode("append")
+        .saveAsTable(QUARANTINE)
     )
 
 
@@ -67,27 +72,34 @@ with PipelineLogger(spark, layer="bronze", parameter="noaa_full_load") as logger
     )
     raw = raw.toDF(*[c.replace("\ufeff", "").strip() for c in raw.columns])
 
-    is_bad = F.col("MMSI").isNull() | F.col("BaseDateTime").isNull()
+    is_bad = col("MMSI").isNull() | col("BaseDateTime").isNull()
 
     good = (
         raw.filter(~is_bad)
-        .withColumn("source", F.lit("noaa"))
-        .withColumn("batch_id", F.lit(batch_id))
-        .withColumn("ingestion_timestamp", F.current_timestamp())
-        .withColumn("load_timestamp", F.current_timestamp())
+        .withColumn("source", lit("noaa"))
+        .withColumn("batch_id", lit(batch_id))
+        .withColumn("ingestion_timestamp", current_timestamp())
+        .withColumn("load_timestamp", current_timestamp())
     )
 
-    bad = raw.filter(is_bad).withColumn("raw_payload", F.to_json(F.struct(*raw.columns)))
+    bad = raw.filter(is_bad).withColumn("raw_payload", to_json(struct(*raw.columns)))
     if not bad.isEmpty():
         quarantine(bad, "noaa", "missing MMSI or BaseDateTime")
 
-    (
-        good.write.format("delta")
-        .mode("overwrite")
-        .option("overwriteSchema", "true")
+    # Bronze Delta write (Lab 3 Task 4 format)
+    good.write \
+        .format("delta") \
+        .mode("overwrite") \
+        .option("overwriteSchema", "true") \
         .saveAsTable(TARGET)
-    )
 
     total = spark.table(TARGET).count()
     logger.set_metrics(rows_inserted=total)
     print(f"Ingested {total} NOAA records into {TARGET} (batch: {batch_id})")
+
+    # Verification query (Lab 3 Task 10)
+    spark.sql(f"""
+        SELECT COUNT(*) AS total_records
+        FROM {TARGET}
+    """).show()
+
