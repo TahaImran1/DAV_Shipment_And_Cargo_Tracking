@@ -1,3 +1,4 @@
+# Databricks notebook source
 import os
 import re
 import sys
@@ -7,7 +8,7 @@ try:
 except NameError:
     pass
 
-from pyspark.sql import functions as F
+from pyspark.sql.functions import col, lit, current_timestamp
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType
 from audit_logger import PipelineLogger
 
@@ -39,25 +40,32 @@ with PipelineLogger(spark, layer="bronze", parameter="wpi_reference") as logger:
 
     df = raw.toDF(*[clean_name(c) for c in raw.columns])
     df = (
-        df.withColumn("portNumber", F.col("portNumber").cast("int"))
-        .withColumn("source", F.lit("wpi"))
-        .withColumn("batch_id", F.lit(batch_id))
-        .withColumn("ingestion_timestamp", F.current_timestamp())
-        .withColumn("load_timestamp", F.current_timestamp())
+        df.withColumn("portNumber", col("portNumber").cast("int"))
+        .withColumn("source", lit("wpi"))
+        .withColumn("batch_id", lit(batch_id))
+        .withColumn("ingestion_timestamp", current_timestamp())
+        .withColumn("load_timestamp", current_timestamp())
     )
 
-    missing = df.filter(F.col("portNumber").isNull()).count()
+    missing = df.filter(col("portNumber").isNull()).count()
     if missing:
         print(f"Dropping {missing} rows without a valid portNumber")
-    df = df.filter(F.col("portNumber").isNotNull())
+    df = df.filter(col("portNumber").isNotNull())
 
-    (
-        df.write.format("delta")
-        .mode("overwrite")
-        .option("overwriteSchema", "true")
+    # Bronze Delta overwrite write (Lab 3 Task 4 format)
+    df.write \
+        .format("delta") \
+        .mode("overwrite") \
+        .option("overwriteSchema", "true") \
         .saveAsTable(TARGET)
-    )
 
     total = spark.table(TARGET).count()
     logger.set_metrics(rows_inserted=total)
     print(f"Ingested {total} ports into {TARGET}")
+
+    # Verification query (Lab 3 Task 10)
+    spark.sql(f"""
+        SELECT COUNT(*) AS total_records
+        FROM {TARGET}
+    """).show()
+
