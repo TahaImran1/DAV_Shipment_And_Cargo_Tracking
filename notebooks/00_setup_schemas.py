@@ -1,3 +1,8 @@
+# Databricks notebook source
+# Setup Schemas and Operational Tables (Lab 3 Convention)
+
+print("Spark Version:", spark.version)
+
 for schema in ["bronze", "silver", "gold", "maritime_ops"]:
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS workspace.{schema}")
 
@@ -12,7 +17,7 @@ spark.sql("""
     ) USING DELTA
 """)
 
-# keep these columns in sync with whatever audit_logger.py writes
+# Keep these columns in sync with audit_logger.py
 spark.sql("""
     CREATE TABLE IF NOT EXISTS workspace.maritime_ops.pipeline_execution_logs (
         run_id STRING,
@@ -29,3 +34,8 @@ spark.sql("""
 """)
 
 print("Schemas and setup tables verified successfully.")
+
+spark.sql("""
+    SHOW SCHEMAS IN workspace
+""").show()
+
