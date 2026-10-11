@@ -1,4 +1,3 @@
-# Databricks notebook source
 import os
 import sys
 from datetime import datetime, timezone
@@ -24,7 +23,7 @@ except Exception:
 TARGET = "workspace.bronze.raw_noaa_ais"
 QUARANTINE = "workspace.bronze.quarantine"
 
-# Explicit Schema Definition (Schema-on-Read as in Lab 4 Task 02)
+# Explicit Schema Definition
 NOAA_SCHEMA = StructType([
     StructField("MMSI", StringType(), True),
     StructField("BaseDateTime", StringType(), True),
@@ -86,7 +85,6 @@ with PipelineLogger(spark, layer="bronze", parameter="noaa_full_load") as logger
     if not bad.isEmpty():
         quarantine(bad, "noaa", "missing MMSI or BaseDateTime")
 
-    # Bronze Delta write (Lab 3 Task 4 format)
     good.write \
         .format("delta") \
         .mode("overwrite") \
@@ -97,7 +95,6 @@ with PipelineLogger(spark, layer="bronze", parameter="noaa_full_load") as logger
     logger.set_metrics(rows_inserted=total)
     print(f"Ingested {total} NOAA records into {TARGET} (batch: {batch_id})")
 
-    # Verification query (Lab 3 Task 10)
     spark.sql(f"""
         SELECT COUNT(*) AS total_records
         FROM {TARGET}

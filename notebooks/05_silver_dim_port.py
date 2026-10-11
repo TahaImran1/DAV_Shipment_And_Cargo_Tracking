@@ -1,4 +1,3 @@
-# Databricks notebook source
 import os
 import re
 import sys
@@ -51,7 +50,6 @@ def parse_dms(s):
 parse_dms_udf = udf(parse_dms, DoubleType())
 
 
-# Silver Layer Upsert (MERGE INTO) as taught in Lab 3 Task 8
 def merge_into(df, target, keys):
     if not spark.catalog.tableExists(target):
         df.limit(0).write.format("delta").saveAsTable(target)
@@ -94,7 +92,6 @@ with PipelineLogger(spark, layer="silver", parameter="dim_port") as logger:
         )
     )
 
-    # A few ports can share a UN/LOCODE, keep the lowest port number
     w = Window.partitionBy("port_code").orderBy("port_number")
     ports = ports.withColumn("rn", row_number().over(w)).filter("rn = 1").drop("rn")
 
@@ -103,7 +100,6 @@ with PipelineLogger(spark, layer="silver", parameter="dim_port") as logger:
     total = spark.table(TARGET).count()
     print(f"MERGE completed on {TARGET}: {inserted} inserted, {updated} updated (total: {total})")
 
-    # Verify no duplicate port codes exist (Lab 3 Task 8)
     spark.sql(f"""
         SELECT port_code, COUNT(*) AS occurrences
         FROM {TARGET}
@@ -111,7 +107,6 @@ with PipelineLogger(spark, layer="silver", parameter="dim_port") as logger:
         HAVING COUNT(*) > 1
     """).show()
 
-    # Verification count query (Lab 3 Task 10)
     spark.sql(f"""
         SELECT COUNT(*) AS total_records
         FROM {TARGET}

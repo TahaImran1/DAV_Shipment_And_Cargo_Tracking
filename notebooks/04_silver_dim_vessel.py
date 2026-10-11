@@ -1,4 +1,3 @@
-# Databricks notebook source
 import os
 import sys
 
@@ -35,7 +34,6 @@ def positive(c):
     return when(c.cast("double") > 0, c.cast("double"))
 
 
-# Silver Layer Upsert (MERGE INTO) as taught in Lab 3 Task 8
 def merge_into(df, target, keys):
     if not spark.catalog.tableExists(target):
         df.limit(0).write.format("delta").saveAsTable(target)
@@ -82,7 +80,6 @@ with PipelineLogger(spark, layer="silver", parameter="dim_vessel") as logger:
 
     vessels = noaa.unionByName(live).filter(length(col("mmsi").cast("string")) == 9)
 
-    # For each vessel take the most recent non-null value of every attribute
     w = (
         Window.partitionBy("mmsi")
         .orderBy(col("ts").desc_nulls_last())
@@ -99,7 +96,6 @@ with PipelineLogger(spark, layer="silver", parameter="dim_vessel") as logger:
     total = spark.table(TARGET).count()
     print(f"MERGE completed on {TARGET}: {inserted} inserted, {updated} updated (total: {total})")
 
-    # Verify no duplicate keys exist (Lab 3 Task 8)
     spark.sql(f"""
         SELECT mmsi, COUNT(*) AS occurrences
         FROM {TARGET}
@@ -107,7 +103,6 @@ with PipelineLogger(spark, layer="silver", parameter="dim_vessel") as logger:
         HAVING COUNT(*) > 1
     """).show()
 
-    # Verification count query (Lab 3 Task 10)
     spark.sql(f"""
         SELECT COUNT(*) AS total_records
         FROM {TARGET}

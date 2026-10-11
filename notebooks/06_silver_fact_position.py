@@ -1,4 +1,3 @@
-# Databricks notebook source
 import os
 import sys
 
@@ -20,7 +19,6 @@ from audit_logger import PipelineLogger
 TARGET = "workspace.silver.fact_vessel_position"
 
 
-# Silver Layer Upsert (MERGE INTO) as taught in Lab 3 Task 8
 def merge_into(df, target, keys):
     if not spark.catalog.tableExists(target):
         df.limit(0).write.format("delta").saveAsTable(target)
@@ -65,7 +63,6 @@ with PipelineLogger(spark, layer="silver", parameter="fact_vessel_position") as 
         lit("aisstream").alias("source"),
     )
 
-    # Nulls fail the comparisons below, so they get filtered out too
     positions = (
         noaa.unionByName(live)
         .filter(
@@ -84,7 +81,6 @@ with PipelineLogger(spark, layer="silver", parameter="fact_vessel_position") as 
     total = spark.table(TARGET).count()
     print(f"MERGE completed on {TARGET}: {inserted} inserted, {updated} updated (total: {total})")
 
-    # Verify no duplicate keys exist (Lab 3 Task 8)
     spark.sql(f"""
         SELECT mmsi, timestamp, COUNT(*) AS occurrences
         FROM {TARGET}
@@ -92,7 +88,6 @@ with PipelineLogger(spark, layer="silver", parameter="fact_vessel_position") as 
         HAVING COUNT(*) > 1
     """).show()
 
-    # Verification count query (Lab 3 Task 10)
     spark.sql(f"""
         SELECT COUNT(*) AS total_records
         FROM {TARGET}

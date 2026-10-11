@@ -1,6 +1,3 @@
-# Databricks notebook source
-# Setup Schemas and Operational Tables (Lab 3 Convention)
-
 print("Spark Version:", spark.version)
 
 for schema in ["bronze", "silver", "gold", "maritime_ops"]:
@@ -17,7 +14,6 @@ spark.sql("""
     ) USING DELTA
 """)
 
-# Keep these columns in sync with audit_logger.py
 spark.sql("""
     CREATE TABLE IF NOT EXISTS workspace.maritime_ops.pipeline_execution_logs (
         run_id STRING,

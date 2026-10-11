@@ -1,4 +1,3 @@
-# Databricks notebook source
 import os
 import re
 import sys
@@ -52,7 +51,6 @@ with PipelineLogger(spark, layer="bronze", parameter="wpi_reference") as logger:
         print(f"Dropping {missing} rows without a valid portNumber")
     df = df.filter(col("portNumber").isNotNull())
 
-    # Bronze Delta overwrite write (Lab 3 Task 4 format)
     df.write \
         .format("delta") \
         .mode("overwrite") \
@@ -63,7 +61,6 @@ with PipelineLogger(spark, layer="bronze", parameter="wpi_reference") as logger:
     logger.set_metrics(rows_inserted=total)
     print(f"Ingested {total} ports into {TARGET}")
 
-    # Verification query (Lab 3 Task 10)
     spark.sql(f"""
         SELECT COUNT(*) AS total_records
         FROM {TARGET}

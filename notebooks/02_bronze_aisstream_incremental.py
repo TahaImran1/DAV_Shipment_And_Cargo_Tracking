@@ -1,4 +1,3 @@
-# Databricks notebook source
 import os
 import sys
 from datetime import datetime, timezone
@@ -31,7 +30,6 @@ TARGET = "workspace.bronze.raw_aisstream_incremental"
 QUARANTINE = "workspace.bronze.quarantine"
 
 
-# Stringified JSON extraction (Lab 4 Task 4 syntax using get_json_object)
 def j(path):
     return get_json_object(col("value"), path)
 
@@ -92,7 +90,6 @@ with PipelineLogger(spark, layer="bronze", parameter="aisstream_incremental") as
         .withColumn("load_timestamp", current_timestamp())
     )
 
-    # Incremental append write (Lab 3 Task 7)
     good.write \
         .format("delta") \
         .mode("append") \
@@ -103,7 +100,6 @@ with PipelineLogger(spark, layer="bronze", parameter="aisstream_incremental") as
     logger.set_metrics(rows_inserted=inserted)
     print(f"Ingested {inserted} incremental AIS records into {TARGET} (batch: {batch_id}, total: {total})")
 
-    # Verification query (Lab 3 Task 10)
     spark.sql(f"""
         SELECT COUNT(*) AS total_records
         FROM {TARGET}

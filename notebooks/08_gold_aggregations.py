@@ -1,4 +1,3 @@
-# Databricks notebook source
 import os
 import sys
 
@@ -33,7 +32,7 @@ from pyspark.sql.window import Window
 from audit_logger import PipelineLogger
 
 PORT_RADIUS_KM = 15
-MAX_GAP_HOURS = 2          # ignore gaps between pings longer than this
+MAX_GAP_HOURS = 2
 MOVING_SOG = 0.5           # knots
 DESIGN_SPEED_KNOTS = 14
 CO2_PER_TONNE_FUEL = 3.114
@@ -46,7 +45,6 @@ def haversine_km(lat1, lon1, lat2, lon2):
     return 2 * 6371 * asin(sqrt(least(lit(1.0), a)))
 
 
-# Gold Delta write helper (Lab 3 Task 6 & 9 format)
 def save(df, table):
     df.write \
         .format("delta") \
@@ -64,7 +62,6 @@ with PipelineLogger(spark, layer="gold", parameter="aggregations") as logger:
         col("latitude").isNotNull() & col("longitude").isNotNull()
     ).select("port_code", "port_name", col("latitude").alias("p_lat"), col("longitude").alias("p_lon"))
 
-    # One point per slow-moving vessel per day keeps the port join small
     stationary = (
         pos.filter(col("sog") < 1)
         .withColumn("date", to_date("timestamp"))
@@ -84,7 +81,6 @@ with PipelineLogger(spark, layer="gold", parameter="aggregations") as logger:
         .agg(_count("*").alias("vessels_in_port"))
     )
 
-    # ---- per-leg metrics (consecutive pings of the same vessel) ----
     w = Window.partitionBy("mmsi").orderBy("timestamp")
     legs = (
         pos.withColumn("prev_lat", lag("latitude").over(w))
@@ -104,7 +100,6 @@ with PipelineLogger(spark, layer="gold", parameter="aggregations") as logger:
         _round(moving_hours, 2).alias("operating_hours"),
     )
 
-    # ---- emissions proxy: rough fuel burn using the cube law on speed ----
     vessels = spark.table("workspace.silver.dim_vessel").select("mmsi", "vessel_type", "length")
 
     vt = col("vessel_type")
@@ -142,7 +137,6 @@ with PipelineLogger(spark, layer="gold", parameter="aggregations") as logger:
     print(f"  - daily_vessel_activity: {a_count} rows")
     print(f"  - vessel_emissions_proxy: {e_count} rows")
 
-    # Multi-table verification check (Lab 4 Task 7)
     spark.sql("""
         SELECT 'port_congestion_daily' AS table_name, COUNT(*) AS total_records FROM workspace.gold.port_congestion_daily
         UNION ALL

@@ -1,4 +1,3 @@
-# Databricks notebook source
 import os
 import sys
 
@@ -105,7 +104,6 @@ with PipelineLogger(spark, layer="silver", parameter="dim_voyage") as logger:
         .withColumn("load_timestamp", current_timestamp())
     )
 
-    # Silver Delta overwrite write (Lab 3 Task 4 format)
     result.write \
         .format("delta") \
         .mode("overwrite") \
@@ -116,7 +114,6 @@ with PipelineLogger(spark, layer="silver", parameter="dim_voyage") as logger:
     logger.set_metrics(rows_inserted=total)
     print(f"Derived {total} voyages into {TARGET}")
 
-    # Verification count query (Lab 3 Task 10)
     spark.sql(f"""
         SELECT COUNT(*) AS total_records
         FROM {TARGET}
