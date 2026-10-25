@@ -7,3 +7,4 @@ __pycache__/
 # Ignore large full load raw data (>100MB exceeds GitHub push limits)
 data/samples/full_load/AIS_Full_Load.csv
 ais_data/
+dva proj.code-workspace
