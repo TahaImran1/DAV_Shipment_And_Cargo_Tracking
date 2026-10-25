@@ -257,7 +257,7 @@ with PipelineLogger(spark, layer="gold", parameter="dimensional_modeling") as lo
             date_format("start_time", "yyyyMMdd").cast("int").alias("start_date_key"),
             col("start_time"),
             col("end_time"),
-            col("duration_seconds"),
+            _round((unix_timestamp("end_time") - unix_timestamp("start_time")), 2).alias("duration_seconds"),
             col("status"),
             col("rows_inserted"),
             col("rows_updated"),

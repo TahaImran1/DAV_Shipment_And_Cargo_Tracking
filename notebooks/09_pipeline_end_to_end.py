@@ -495,7 +495,7 @@ with PipelineLogger(spark, layer="end_to_end_orchestration", parameter=batch_id)
                 date_format("start_time", "yyyyMMdd").cast("int").alias("start_date_key"),
                 col("start_time"),
                 col("end_time"),
-                col("duration_seconds"),
+                _round((unix_timestamp("end_time") - unix_timestamp("start_time")), 2).alias("duration_seconds"),
                 col("status"),
                 col("rows_inserted"),
                 col("rows_updated"),
