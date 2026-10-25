@@ -166,6 +166,7 @@ with PipelineLogger(spark, layer="end_to_end_orchestration", parameter=batch_id)
                 .mode("append") \
                 .saveAsTable(QUARANTINE_TARGET)
 
+        target_cols = spark.table(BRONZE_TARGET).columns
         good = (
             parsed.filter(col("mmsi").isNotNull())
             .withColumn("source", lit("aisstream"))
@@ -173,6 +174,7 @@ with PipelineLogger(spark, layer="end_to_end_orchestration", parameter=batch_id)
             .withColumn("ingestion_timestamp", current_timestamp())
             .withColumn("load_timestamp", current_timestamp())
         )
+        good = good.select(*[c for c in good.columns if c in target_cols])
 
         good.write \
             .format("delta") \
