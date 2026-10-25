@@ -337,3 +337,7 @@ with PipelineLogger(spark, layer="gold", parameter="dimensional_modeling") as lo
         UNION ALL
         SELECT 'fact_pipeline_performance' AS table_name, COUNT(*) AS total_records FROM workspace.gold.fact_pipeline_performance
     """).show()
+
+    print("=== Spark Execution Plan & DAG Breakdown for Gold Fact Aggregation ===")
+    fact_activity.explain(mode="formatted")
+
