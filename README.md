@@ -75,19 +75,33 @@ All Silver tables are populated via **idempotent `MERGE INTO`** (zero duplicate 
 | `silver.fact_vessel_position` | Fact | `(mmsi, timestamp)` | `latitude`, `longitude`, `sog`, `cog`, `heading`, `status`, `source`, `load_timestamp` | 1,979,953 |
 | `silver.dim_voyage` | Dimension | `voyage_id` (STRING) | `mmsi`, `voyage_seq`, `departure_time`, `arrival_time`, `arrival_port_code`, `position_count`, `load_timestamp` | 10,305 |
 
-### 2.3 Gold Business Marts
+### 2.3 Gold Dimensional Star Schema & Business Marts
 
-| Table | Grain | Key Metrics | Rows |
-| :--- | :--- | :--- | :--- |
-| `gold.port_congestion_daily` | Port × Date | `vessels_in_port`, port dwell proxy | 124 |
-| `gold.daily_vessel_activity` | MMSI × Date | `total_distance_km`, `avg_speed_knots`, `operating_hours` | 13,133 |
-| `gold.vessel_emissions_proxy` | MMSI × Date | `fuel_burn_proxy_tonnes` (Admiralty cube law), `co2_proxy_tonnes` | 13,133 |
+The Gold layer transforms conformed Silver entities into an analytical Star Schema with conformed dimensions and high-performance fact tables optimized for analytical reads via Delta `OPTIMIZE` and `Z-ORDER BY`:
+
+#### Dimensional Model (Star Schema)
+| Table | Type | Primary Key / Grain | Key Attributes / Metrics | Optimization |
+| :--- | :--- | :--- | :--- | :--- |
+| `gold.dim_date` | Dimension | `date_key` (INT) | `full_date`, `year`, `quarter`, `month`, `month_name`, `day`, `day_of_week`, `day_name`, `is_weekend` | Z-ORDER (`date_key`) |
+| `gold.dim_vessel` | Dimension | `mmsi` (BIGINT) | `vessel_name`, `imo`, `call_sign`, `vessel_category`, `size_category`, `length`, `width`, `draft`, `efficiency_factor` | Z-ORDER (`mmsi`) |
+| `gold.dim_port` | Dimension | `port_code` (STRING) | `port_number`, `port_name`, `country`, `latitude`, `longitude`, `harbor_size`, `harbor_size_desc` | Z-ORDER (`port_code`) |
+| `gold.fact_daily_vessel_activity` | Fact | `(mmsi, date_key)` | `total_distance_km`, `avg_speed_knots`, `max_speed_knots`, `operating_hours`, `fuel_burn_proxy_tonnes`, `co2_proxy_tonnes` | Z-ORDER (`mmsi`, `date_key`) |
+| `gold.fact_port_congestion_daily` | Fact | `(port_code, date_key)` | `vessels_in_port`, `avg_stationary_sog`, port dwell proxy | Z-ORDER (`port_code`, `date_key`) |
+| `gold.fact_voyage_performance` | Fact | `voyage_id` (STRING) | `mmsi`, `departure_date_key`, `arrival_date_key`, `duration_hours`, `arrival_port_code`, `transit_distance_km` | Z-ORDER (`mmsi`, `arrival_port_code`) |
+| `gold.fact_pipeline_performance` | Fact | `log_id` (STRING) | `layer`, `parameter`, `start_date_key`, `duration_seconds`, `status`, `rows_inserted`, `rows_updated` | Z-ORDER (`start_date_key`, `status`) |
+
+#### Backward-Compatible Summary Marts
+| Table | Grain | Key Metrics |
+| :--- | :--- | :--- |
+| `gold.port_congestion_daily` | Port × Date | `vessels_in_port` |
+| `gold.daily_vessel_activity` | MMSI × Date | `total_distance_km`, `avg_speed_knots`, `operating_hours` |
+| `gold.vessel_emissions_proxy` | MMSI × Date | `fuel_burn_proxy_tonnes`, `co2_proxy_tonnes` |
 
 ---
 
 ## 3. Pipeline Execution & Backfill Guide
 
-Run the notebooks sequentially in Databricks:
+Run the notebooks sequentially or execute the automated end-to-end master pipeline:
 
 ```
 notebooks/
@@ -99,7 +113,8 @@ notebooks/
 ├── 04_silver_dim_vessel.py          # Windowed deduplication & merge into dim_vessel
 ├── 06_silver_fact_position.py       # Validates coordinates & merges into fact_vessel_position
 ├── 07_silver_dim_voyage.py          # Haversine distance & windowed voyage segmentation
-└── 08_gold_aggregations.py          # Refreshes all 3 Gold summary aggregation tables
+├── 08_gold_aggregations.py          # Builds full Gold Star Schema dimensions, facts & Z-ORDER
+└── 09_pipeline_end_to_end.py        # Automated end-to-end orchestrator linking Bronze -> Silver -> Gold
 ```
 
 ### Backfill vs. Incremental Parameter Guide
